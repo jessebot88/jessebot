@@ -3,7 +3,7 @@
 Device names matching the pattern ``xx-xxxx-xxxxxx.domain.com`` will be
 shortened to ``xx-xxxx-xxxxxx`` (everything before the first dot).
 """
-from nautobot.apps.jobs import BooleanVar, Job, register_jobs
+from nautobot.apps.jobs import BooleanVar, Job, MultiObjectVar, register_jobs
 from nautobot.dcim.models import Device
 
 
@@ -13,16 +13,26 @@ class StripDeviceDomains(Job):
         description = "Remove the domain suffix (e.g. .domain.com) from device names."
         has_sensitive_variables = False
 
+    devices = MultiObjectVar(
+        model=Device,
+        required=False,
+        description="Optional: limit to specific devices for testing. Leave blank to process all devices.",
+        query_params={"name__ic": "."},
+    )
     dry_run = BooleanVar(
         description="Preview changes without saving.",
         default=True,
     )
 
-    def run(self, dry_run):
+    def run(self, dry_run, devices=None):
         renamed = 0
         skipped = 0
 
-        for device in Device.objects.filter(name__contains="."):
+        queryset = Device.objects.filter(name__contains=".")
+        if devices:
+            queryset = queryset.filter(pk__in=[d.pk for d in devices])
+
+        for device in queryset:
             original = device.name
             new_name = original.split(".", 1)[0]
 
