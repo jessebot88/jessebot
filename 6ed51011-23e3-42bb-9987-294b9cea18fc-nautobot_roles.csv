@@ -1,0 +1,63 @@
+﻿name,display,id,object_type,natural_slug,content_types,color,description,weight,created,last_updated
+access-switch,access-switch,304d5a5d-7b1d-45d7-864d-f4ed39f50915,extras.role,access-switch_304d,dcim.device,cddc39,Device is an access switch at the location,100,2026-02-08T17:05:37.214836Z,2026-03-30T22:15:54.201774Z
+aggregation-router,aggregation-router,39ae28d7-860e-42b1-9d86-1b83eb4ab015,extras.role,aggregation-router_39ae,dcim.device,4caf50,,100,2026-03-03T17:09:15.390006Z,2026-03-30T22:15:54.209231Z
+apn-router,apn-router,97b0127a-da21-45a1-83ef-ad8c523cac00,extras.role,apn-router_97b0,dcim.device,3f51b5,,100,2026-03-30T22:14:35.214312Z,2026-04-20T04:41:09.101706Z
+cable-mgmt,cable-mgmt,0d07ac23-c9a5-4a3d-bdbf-96942f641216,extras.role,cable-mgmt_0d07,dcim.device,111111,,100,2026-02-08T17:05:37.286144Z,2026-04-20T04:41:19.263533Z
+console-server,console-server,a9fdb330-57b2-43a1-880b-8aa51eaf08d9,extras.role,console-server_a9fd,dcim.device,ffc107,,100,2026-04-20T04:43:04.468664Z,2026-04-20T04:43:04.468691Z
+core-router,core-router,cfc4f4aa-cfb0-492d-9f06-19e2b5e53215,extras.role,core-router_cfc4,dcim.device,aa1409,Device is a CORE ROUTER,100,2026-02-08T17:05:37.351555Z,2026-03-30T22:15:54.224668Z
+core-switch,core-switch,8f11f33f-aab4-447d-8728-0c11ede36557,extras.role,core-switch_8f11,dcim.device,673ab7,,100,2026-04-20T04:44:12.676872Z,2026-04-20T04:44:12.676902Z
+distribution-switch,distribution-switch,4004007d-deff-4dc2-b34e-05b6980d35f6,extras.role,distribution-switch_4004,dcim.device,8bc34a,Device is an distribution switch at the location,100,2026-02-08T17:05:37.380057Z,2026-03-30T22:15:54.235421Z
+edge-router,edge-router,97d5ecf8-d5df-4188-bc4f-ceeb573cabce,extras.role,edge-router_97d5,dcim.device,e91e63,Device is an edge router,100,2026-02-08T17:05:37.486970Z,2026-03-30T22:15:54.245998Z
+edge-switch,edge-switch,771fd89e-48ac-4f59-ac50-8aa074d26234,extras.role,edge-switch_771f,dcim.device,2196f3,Device is an edge switch at the location,100,2026-02-08T17:05:37.518917Z,2026-03-30T22:15:54.255073Z
+firewall,firewall,b4f8079d-1b45-4d3d-bfc6-e6751ff272d1,extras.role,firewall_b4f8,dcim.device,aa1409,Device is a firewall at location,100,2026-02-08T17:05:37.603149Z,2026-03-30T22:15:54.264885Z
+internet-router,internet-router,09028514-ac67-41ec-8f25-777e6e795aa0,extras.role,internet-router_0902,dcim.device,cddc39,,100,2026-03-03T17:26:37.991444Z,2026-03-30T22:15:54.272095Z
+leaf,leaf,20a5dfae-ea6d-4511-9b86-7da2e0a00822,extras.role,leaf_20a5,dcim.device,00bcd4,,100,2026-02-03T18:20:03.860686Z,2026-03-30T22:17:35.252245Z
+load-balancer,load-balancer,e3f69ed1-3406-4345-a291-e62fcfd0c5c1,extras.role,load-balancer_e3f6,dcim.device,795548,,100,2026-03-03T17:11:35.030476Z,2026-03-30T22:15:54.287626Z
+Network Device,Network Device,9079f16a-e71a-4bad-a259-0fcfb68afd73,extras.role,network-device_9079,dcim.device,9e9e9e,,100,2025-12-21T03:42:40.735620Z,2026-03-30T22:15:54.294382Z
+Patch Panel,Patch Panel,cd07500d-2c59-4dd2-92f3-d29bc137e978,extras.role,patch-panel_cd07,dcim.device,ffffff,,100,2026-02-08T17:05:37.782784Z,2026-03-30T22:15:54.301473Z
+primary-router,primary-router,8fa8ac33-3642-414f-acc4-735031b99d93,extras.role,primary-router_8fa8,dcim.device,03a9f4,Device is the primary router at the location,100,2026-02-08T17:05:37.875758Z,2026-03-30T22:15:54.308330Z
+remote-access,remote-access,5d74af52-0d78-4078-b41d-3a0e4284f97d,extras.role,remote-access_5d74,dcim.device,ff5722,,100,2026-02-08T17:05:37.929089Z,2026-03-30T22:15:54.315158Z
+sdwan-router,sdwan-router,c71be982-4f58-492f-a323-2027f48f58cc,extras.role,sdwan-router_c71b,dcim.device,03a9f4,,100,2026-04-20T04:48:13.235958Z,2026-04-20T04:48:13.235989Z
+secondary-router,secondary-router,a4e5e339-39b0-48c6-8f79-e6316e3251fa,extras.role,secondary-router_a4e5,dcim.device,ffeb3b,Device is the secondary router at the location,100,2026-02-08T17:05:37.989142Z,2026-03-30T22:15:54.321894Z
+spine,spine,5b4c932f-7dd6-4012-8092-c79133403314,extras.role,spine_5b4c,"dcim.device,virtualization.virtualmachine",009688,Device is a spine switch at the location,100,2026-02-08T17:05:38.072294Z,2026-03-30T22:15:54.329880Z
+standalone-router,standalone-router,e9e99f39-a9e9-471e-856a-0aa44add3c68,extras.role,standalone-router_e9e9,dcim.device,ff5722,Device is a standalone router,100,2026-02-08T17:05:38.144623Z,2026-03-30T22:15:54.337252Z
+vm-host,vm-host,ceb1f85c-ba20-47fc-a1b9-06ed8cee8bff,extras.role,vm-host_ceb1,dcim.device,8bc34a,,100,2026-03-23T15:31:34.057597Z,2026-03-30T22:15:54.344318Z
+voice-router,voice-router,05277438-b1ec-4e88-b66b-8aec30128d94,extras.role,voice-router_0527,dcim.device,e91e63,,100,2026-02-08T17:16:23.183932Z,2026-03-30T22:15:54.350716Z
+vpn-router,vpn-router,7afb17a6-b901-4960-9ba6-696433af1b4f,extras.role,vpn-router_7afb,dcim.device,009688,,100,2026-03-03T17:08:17.643090Z,2026-04-20T04:51:38.577609Z
+wan-router,wan-router,e382500e-19f2-4b92-8852-e4d202883a3b,extras.role,wan-router_e382,dcim.device,ffffff,,100,2026-02-08T17:05:37.899911Z,2026-04-20T04:51:57.956329Z
+Aggregate,Aggregate,ce98fc5b-5bfb-4363-92e4-2945e2092e78,extras.role,aggregate_ce98,ipam.prefix,2f6a31,Site Subnets,500,2026-02-08T17:05:37.250584Z,2026-04-20T05:15:05.305210Z
+Anycast,Anycast,65d146fb-fd87-4eab-913d-15cba0410383,extras.role,anycast_65d1,ipam.ipaddress,ffc107,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.316741Z
+CARP,CARP,0090cfd1-a272-4f82-88b9-dd36d158bde3,extras.role,carp_0090,ipam.ipaddress,4caf50,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.326892Z
+Core,Core,25975155-a508-47fe-bc2d-fd4fa9ee6ca5,extras.role,core_2597,"ipam.ipaddress,ipam.prefix,ipam.vlan,virtualization.virtualmachine",ff66ff,,500,2026-02-08T17:05:37.324501Z,2026-04-20T05:15:05.336188Z
+DMZ,DMZ,a2311f06-2fe5-411a-9620-110f53e6e4e0,extras.role,dmz_a231,ipam.prefix,795548,,500,2026-02-08T17:05:37.459922Z,2026-04-20T05:15:05.346411Z
+EIGRP,EIGRP,c6924781-ad14-4326-9c55-219de5c49cf9,extras.role,eigrp_c692,"ipam.ipaddress,ipam.prefix,ipam.vlan",2196f3,,500,2026-02-08T17:05:37.549962Z,2026-04-20T05:15:05.356475Z
+Gateway,Gateway,ef62d697-c60a-478b-bd70-73329bee98c5,extras.role,gateway_ef62,ipam.ipaddress,ffffff,VLAN Gateway IPs,500,2026-02-08T17:05:37.632135Z,2026-04-20T05:15:05.365123Z
+GLBP,GLBP,0afc41f9-ea9b-42ef-a5ab-1fe2d31c0842,extras.role,glbp_0afc,ipam.ipaddress,4caf50,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.373797Z
+Host,Host,e3fb40ac-3093-4455-9442-1cb377c6c32f,extras.role,host_e3fb,ipam.ipaddress,607d8b,Host Objects,500,2026-02-08T17:05:37.656975Z,2026-04-20T05:15:05.383801Z
+HSRP,HSRP,2a14ecd3-c163-4d17-a6b4-05b9a45e1617,extras.role,hsrp_2a14,ipam.ipaddress,4caf50,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.393199Z
+Loopback,Loopback,b953e361-512e-451f-a9ff-59e7407e9fb7,extras.role,loopback_b953,ipam.ipaddress,9e9e9e,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.402357Z
+MGMT,MGMT,a245aa29-5794-4b81-937d-ecded1da6584,extras.role,mgmt_a245,"ipam.ipaddress,ipam.prefix,ipam.vlan",ff9800,OOB Management objects,500,2026-02-08T17:05:37.714044Z,2026-04-20T05:15:05.411467Z
+PER,PER,a695bfc4-6989-4458-a5dc-2c759671be49,extras.role,per_a695,ipam.ipaddress,ff5722,Provider Edge Router,500,2026-02-08T17:05:37.822301Z,2026-04-20T05:15:05.421905Z
+point-to-point,point-to-point,0cad85f2-5dfb-4562-b685-de6333aa5429,extras.role,point-to-point_0cad,"ipam.ipaddress,ipam.prefix,ipam.vlan",673ab7,EIGRP IP's,500,2026-02-08T17:05:37.852041Z,2026-04-20T05:15:05.430659Z
+Secondary,Secondary,5293932c-8f65-438e-a1d4-6a52fd20490f,extras.role,secondary_5293,"ipam.ipaddress,ipam.prefix",2196f3,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.438979Z
+Server,Server,37183ce1-a626-401a-b021-41a3cc0dcf9e,extras.role,server_3718,"dcim.device,virtualization.virtualmachine",607d8b,,500,2026-02-08T17:05:38.045061Z,2026-04-20T05:15:25.532384Z
+Tunnel,Tunnel,ddeb85eb-b725-4ba8-9b79-bd4c2c0b6da0,extras.role,tunnel_ddeb,"ipam.ipaddress,ipam.prefix",795548,DMVPN Tunnel IP's,500,2026-02-08T17:05:38.181058Z,2026-04-20T05:15:05.447722Z
+VIP,VIP,bc45df82-e0a6-4e92-8ec1-b3971c71ff2c,extras.role,vip_bc45,ipam.ipaddress,4caf50,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.456814Z
+VLAN,VLAN,b1e0234a-f951-43e8-89d1-da05d713792e,extras.role,vlan_b1e0,"ipam.ipaddress,ipam.prefix,ipam.vlan",ffe4e1,Layer 3 Vlans,500,2026-02-08T17:05:38.211639Z,2026-04-20T05:15:05.466596Z
+VRRP,VRRP,77a52721-0934-4303-8ea0-6079e81cc11a,extras.role,vrrp_77a5,ipam.ipaddress,4caf50,,500,2025-06-19T00:00:00Z,2026-04-20T05:15:05.475154Z
+WAN,WAN,400163ea-5d00-4470-98fc-54e94bf05637,extras.role,wan_4001,"ipam.ipaddress,ipam.prefix",ffffff,Transport IPs,500,2026-02-08T17:05:38.246474Z,2026-04-20T05:15:05.483525Z
+Hub,Hub,9df23fce-3063-44a9-b2c9-e85e0ff9e795,extras.role,hub_9df2,vpn.vpntunnelendpoint,2f6a31,Unit plays a Hub role,550,2025-12-02T16:01:59.795134Z,2026-04-20T05:14:48.334267Z
+Peer,Peer,5f47a7d5-4390-4ba0-bcc5-7ebd4b3ccfd9,extras.role,peer_5f47,vpn.vpntunnelendpoint,ff9800,Unit plays a Peer role,550,2025-12-02T16:01:59.792060Z,2026-04-20T05:14:48.344150Z
+Spoke,Spoke,c38f8697-9c10-47ad-9953-0a96a5c70239,extras.role,spoke_c38f,vpn.vpntunnelendpoint,8bc34a,Unit plays a Spoke role,550,2025-12-02T16:01:59.797506Z,2026-04-20T05:14:48.351637Z
+Administrative,Administrative,588b5dae-bf2b-478a-9eda-a2ee332a9f45,extras.role,administrative_588b,extras.contactassociation,2196f3,Unit plays an administrative role,1000,2025-06-19T22:15:20.208122Z,2026-03-30T22:14:59.682758Z
+Billing,Billing,9e5a0f06-c73e-407d-b9db-c7a142ea227e,extras.role,billing_9e5a,extras.contactassociation,4caf50,Unit plays a billing role,1000,2025-06-19T22:15:20.212227Z,2026-03-30T22:14:59.695205Z
+DLM Owner,DLM Owner,5eed006d-403e-4523-a63e-c2a374790e62,extras.role,dlm-owner_5eed,extras.contactassociation,9e9e9e,,1000,2025-11-25T20:15:17.550594Z,2026-03-30T22:14:59.704412Z
+DLM Primary,DLM Primary,a9015b0a-b8d2-41d3-80a1-285ec57dc2c6,extras.role,dlm-primary_a901,extras.contactassociation,9e9e9e,,1000,2025-11-25T20:15:17.524304Z,2026-03-30T22:14:59.712933Z
+DLM Tier 1,DLM Tier 1,3982dccf-6ccb-4c7c-bbb0-af5a6a570166,extras.role,dlm-tier-1_3982,extras.contactassociation,9e9e9e,,1000,2025-11-25T20:15:17.532364Z,2026-03-30T22:14:59.721838Z
+DLM Tier 2,DLM Tier 2,84a472f7-9aba-49ce-993c-bcf8924b283d,extras.role,dlm-tier-2_84a4,extras.contactassociation,9e9e9e,,1000,2025-11-25T20:15:17.538519Z,2026-03-30T22:14:59.730900Z
+DLM Tier 3,DLM Tier 3,f4929e8f-fcde-4ac8-bb0d-08f37a56af2d,extras.role,dlm-tier-3_f492,extras.contactassociation,9e9e9e,,1000,2025-11-25T20:15:17.545272Z,2026-03-30T22:14:59.741569Z
+DLM Unassigned,DLM Unassigned,0ab5af97-19c4-4bb9-a76d-b3ab17e257ee,extras.role,dlm-unassigned_0ab5,extras.contactassociation,9e9e9e,,1000,2025-11-25T20:15:17.556372Z,2026-03-30T22:14:59.750040Z
+Engagement,Engagement,3a72284a-614c-41ae-877a-719eaef99b3c,extras.role,engagement_3a72,extras.contactassociation,9e9e9e,,1000,2026-02-08T17:05:37.578338Z,2026-03-30T22:14:59.757027Z
+On Site,On Site,929fb977-a960-4989-8f61-a90a94f46f6d,extras.role,on-site_929f,extras.contactassociation,111111,Unit plays an on site role,1000,2025-06-19T22:15:20.217714Z,2026-03-30T22:14:59.764387Z
+Sales,Sales,be53b6e0-0b1d-4852-b3ac-c4f0d1a09a1d,extras.role,sales_be53,extras.contactassociation,9e9e9e,,1000,2026-02-08T17:05:37.955224Z,2026-03-30T22:14:59.771148Z
+Support,Support,a8966772-b0b8-4c50-a05c-ac7a3d5993d5,extras.role,support_a896,extras.contactassociation,ffeb3b,Unit plays a support role,1000,2025-06-19T22:15:20.215028Z,2026-03-30T22:14:59.778608Z
