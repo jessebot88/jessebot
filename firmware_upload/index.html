@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firmware Repository</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --card: #131a2e;
+      --line: #2a3654;
+      --text: #e7ecf5;
+      --muted: #8b97b3;
+      --accent: #4f8cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: radial-gradient(1200px 600px at 70% -10%, #1b2b50 0, transparent 60%), var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
+    h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.01em; }
+    .path { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    .meta { color: var(--muted); font-size: 0.85rem; margin: 0.35rem 0 1.5rem; }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent), var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 20px 40px -24px rgba(0,0,0,0.7);
+    }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--line);
+    }
+    tbody td { padding: 0.85rem 1.1rem; border-bottom: 1px solid rgba(42,54,84,0.5); vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: rgba(79,140,255,0.06); }
+    .name { display: flex; align-items: center; gap: 0.65rem; }
+    .name a { color: var(--text); text-decoration: none; font-weight: 600; word-break: break-all; }
+    .name a:hover { color: var(--accent); }
+    .ico { width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+      background: rgba(79,140,255,0.14); border: 1px solid rgba(79,140,255,0.3);
+      border-radius: 7px; font-size: 0.62rem; color: var(--accent); font-weight: 700; }
+    .num { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+    .md5 { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: var(--muted); word-break: break-all; }
+    .md5.none { opacity: 0.5; font-style: italic; font-family: inherit; }
+    .dl { color: var(--accent); text-decoration: none; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+    .dl:hover { text-decoration: underline; }
+    .state { padding: 3rem 1.1rem; text-align: center; color: var(--muted); }
+    footer { margin-top: 1.25rem; color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Firmware Repository</h1>
+      <span class="path" id="path"></span>
+    </header>
+    <p class="meta" id="meta">Loading&hellip;</p>
+
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Size</th><th>Modified</th><th>MD5</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="state" id="state"></div>
+    </div>
+
+    <footer>Listing of this directory's contents.</footer>
+  </div>
+
+  <script>
+  (function () {
+    const rows = document.getElementById("rows");
+    const meta = document.getElementById("meta");
+    const state = document.getElementById("state");
+    const pathEl = document.getElementById("path");
+    pathEl.textContent = location.pathname;
+
+    // Files the listing should never show.
+    const HIDE = new Set(["index.html", "files.json", "manifest.json", "../"]);
+
+    function humanSize(bytes) {
+      if (bytes === null || bytes === undefined || isNaN(bytes)) return "";
+      let n = Number(bytes);
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i];
+    }
+
+    function ext(name) {
+      const i = name.lastIndexOf(".");
+      return (i > 0 ? name.slice(i + 1) : "bin").slice(0, 3).toUpperCase();
+    }
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function render(files) {
+      if (!files.length) {
+        state.textContent = "No firmware files found.";
+        meta.textContent = "0 files";
+        return;
+      }
+      files.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      let total = 0, haveSizes = false;
+      rows.innerHTML = files.map(function (f) {
+        if (f.size_bytes != null) { total += Number(f.size_bytes); haveSizes = true; }
+        const href = f.href || encodeURIComponent(f.name);
+        const md5 = f.md5
+          ? '<span class="md5">' + esc(f.md5) + "</span>"
+          : '<span class="md5 none">&mdash;</span>';
+        return (
+          "<tr><td><span class='name'><span class='ico'>" + esc(ext(f.name)) +
+          "</span><a href='" + href + "'>" + esc(f.name) + "</a></span></td>" +
+          "<td class='num'>" + esc(f.size || humanSize(f.size_bytes)) + "</td>" +
+          "<td class='num'>" + esc(f.modified || "") + "</td>" +
+          "<td>" + md5 + "</td>" +
+          "<td><a class='dl' href='" + href + "' download>Download</a></td></tr>"
+        );
+      }).join("");
+      meta.textContent = files.length + (files.length === 1 ? " file" : " files") +
+        (haveSizes ? " · " + humanSize(total) + " total" : "");
+    }
+
+    // Strategy 1: a files.json manifest sitting next to this page.
+    // Accepts either a bare array or {"firmware":[...]} / {"files":[...]}.
+    function fromJson(data) {
+      let list = Array.isArray(data) ? data
+        : (data.firmware || data.files || []);
+      return list.map(function (e) {
+        return {
+          name: e.filename || e.name,
+          size_bytes: e.size_bytes != null ? e.size_bytes : e.size,
+          modified: e.modified || e.uploaded_at || "",
+          md5: e.md5 || null,
+          href: e.download_url || e.href || null,
+        };
+      }).filter(function (e) { return e.name && !HIDE.has(e.name); });
+    }
+
+    // Strategy 2: scrape the web server's directory autoindex (the plain
+    // listing nginx/Apache/Caddy/`python -m http.server` produce).
+    function fromAutoindex(html) {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const out = [];
+      doc.querySelectorAll("a[href]").forEach(function (a) {
+        const href = a.getAttribute("href");
+        if (!href || href.startsWith("?") || href.startsWith("/") ||
+            href.startsWith("http") || href.endsWith("/") || HIDE.has(href)) return;
+        const name = decodeURIComponent(href.replace(/^\.\//, ""));
+        if (HIDE.has(name)) return;
+        out.push({ name: name, href: href, size_bytes: null, md5: null });
+      });
+      return out;
+    }
+
+    fetch("files.json", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("no json"); return r.json(); })
+      .then(function (d) { render(fromJson(d)); })
+      .catch(function () {
+        // Fall back to scraping the directory autoindex.
+        fetch("./", { cache: "no-store" })
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            const files = fromAutoindex(html);
+            if (!files.length) throw new Error("empty");
+            render(files);
+          })
+          .catch(function () {
+            meta.textContent = "";
+            state.innerHTML = "Couldn't list this directory. Drop a " +
+              "<code>files.json</code> next to this page, or enable directory " +
+              "indexing on the web server.";
+          });
+      });
+  })();
+  </script>
+</body>
+</html>
