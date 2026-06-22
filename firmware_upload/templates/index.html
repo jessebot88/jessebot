@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firmware Upload</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { margin-bottom: 0.25rem; }
+    .sub { color: #777; margin-top: 0; }
+    form { display: grid; gap: 0.75rem; margin: 1.5rem 0; padding: 1.25rem; border: 1px solid #8884; border-radius: 8px; }
+    label { display: grid; gap: 0.25rem; font-weight: 600; }
+    input { padding: 0.5rem; font: inherit; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    button { padding: 0.6rem 1.2rem; font: inherit; font-weight: 600; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; justify-self: start; }
+    .hint { font-weight: 400; color: #888; font-size: 0.85rem; }
+    .flash { padding: 0.75rem 1rem; border-radius: 6px; margin: 1rem 0; }
+    .flash.success { background: #16a34a22; border: 1px solid #16a34a; }
+    .flash.error { background: #dc262622; border: 1px solid #dc2626; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #8883; }
+    code { font-size: 0.85em; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>Firmware Upload</h1>
+  <p class="sub">Upload a firmware image. The server verifies the MD5 and records it in <code>manifest.json</code> for Nautobot to pull.</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+    <label>Firmware file
+      <input type="file" name="firmware" required>
+    </label>
+    <div class="row">
+      <label>Platform
+        <input type="text" name="platform" placeholder="cisco_ios" required>
+        <span class="hint">Must match a Platform name in Nautobot.</span>
+      </label>
+      <label>Version
+        <input type="text" name="version" placeholder="17.9.4" required>
+      </label>
+    </div>
+    <label>Expected MD5 <span class="hint">(optional &mdash; if set, upload is rejected on mismatch)</span>
+      <input type="text" name="md5" placeholder="d41d8cd98f00b204e9800998ecf8427e" pattern="[A-Fa-f0-9]{32}">
+    </label>
+    <button type="submit">Upload &amp; verify</button>
+  </form>
+
+  <h2>Available firmware</h2>
+  {% if firmware %}
+  <table>
+    <thead><tr><th>File</th><th>Platform</th><th>Version</th><th>MD5</th><th>Size</th></tr></thead>
+    <tbody>
+      {% for f in firmware %}
+      <tr>
+        <td><a href="{{ f.download_url }}">{{ f.filename }}</a></td>
+        <td>{{ f.platform }}</td>
+        <td>{{ f.version }}</td>
+        <td><code>{{ f.md5 }}</code></td>
+        <td>{{ '%.1f'|format(f.size_bytes / 1048576) }} MiB</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="sub">No firmware uploaded yet.</p>
+  {% endif %}
+</body>
+</html>
