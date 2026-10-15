@@ -1,0 +1,741 @@
+diff -ruN a/nautobot_app_device_bootstrap/jobs/console.py b/nautobot_app_device_bootstrap/jobs/console.py
+--- a/nautobot_app_device_bootstrap/jobs/console.py	2026-10-15 17:06:35.932766988 +0000
++++ b/nautobot_app_device_bootstrap/jobs/console.py	2026-10-15 17:06:35.943570771 +0000
+@@ -413,11 +413,12 @@
+     def find_prompt(self):
+         return self.conn.find_prompt()
+ 
+-    def save_config(self):
++    def save_config(self, **kwargs):
+         """Persist the running config — semantics belong to the platform
+         driver (Cisco: write memory with the IOS-XE DBPERSIST self-heal;
+-        a future PAN-OS driver: commit + job poll)."""
+-        return self.driver.save_config(self)
++        a future PAN-OS driver: commit + job poll). `verify_contains=<text>`
++        asks the driver to prove the save by reading the saved config back."""
++        return self.driver.save_config(self, **kwargs)
+ 
+     def is_alive(self):
+         try:
+diff -ruN a/nautobot_app_device_bootstrap/jobs/drivers/base.py b/nautobot_app_device_bootstrap/jobs/drivers/base.py
+--- a/nautobot_app_device_bootstrap/jobs/drivers/base.py	2026-10-15 17:06:35.930968539 +0000
++++ b/nautobot_app_device_bootstrap/jobs/drivers/base.py	2026-10-15 17:06:35.943444765 +0000
+@@ -51,10 +51,13 @@
+         """Settings key of the pipeline that runs for a device class."""
+         return self.pipeline_keys[device_class]
+ 
+-    def save_config(self, console):
++    def save_config(self, console, verify_contains=None):
+         """Persist the running config (NOS-specific: write memory vs commit).
+ 
+         Receives the Console so drivers can drive the session and self-heal
+         platform quirks. Must raise on a save that did not persist.
++        `verify_contains`, when a caller passes it, is text that must appear
++        in the persisted config afterwards — positive proof the save landed,
++        for drivers that can read the saved config back.
+         """
+         raise NotImplementedError
+diff -ruN a/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py b/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py
+--- a/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py	2026-10-15 17:06:35.930939838 +0000
++++ b/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py	2026-10-15 17:06:35.943365197 +0000
+@@ -18,46 +18,74 @@
+ 
+ # IOS-XE TDLDB persist bug: a stale CTRL_MNG_CFG_DB directory under
+ # bootflash:/.dbpersist blocks config save AND reload:
+-#   %TDLDB-3-DBPERSIST_OPERATION_FAILURE: ... Failure reason: Is a directory
++#   %TDLDB-3-DBPERSIST_OPERATION_FAILURE: R0/0: dbm: Operation: persist,
++#       DB: /bootflash/.dbpersist/CTRL_MNG_CFG_DB, Failure reason: Is a directory
+ #   %IOSXE_RP_CFG_NOT-3-MCP_DBPERSIST_ERROR: System configuration update
+-#   could not complete
++#       could not complete
++#
++# Only a failure of the CONFIG database means the save did not persist. The
++# same %TDLDB-3-DBPERSIST_OPERATION_FAILURE line is logged for unrelated
++# databases too — seen live on an IR1101 on EVERY `write mem`:
++#   ... DB: /tmp/rp/tdldb/0/DMI_STATE_DB, Failure reason: Is a directory
++# (the NETCONF/YANG state store). Those are noise for provisioning: the
++# save printed [OK], startup-config was written, and matching on the bare
++# word DBPERSIST failed the OS Image step on a router that was fine. So the
++# signature names the config DB explicitly.
+ DBPERSIST_ERROR = re.compile(
+-    r"DBPERSIST|configuration update could not complete|"
+-    r"Failure reason:\s*Is a directory|startup-config file open failed",
++    r"CTRL_MNG_CFG_DB|MCP_DBPERSIST_ERROR|"
++    r"configuration update could not complete|startup-config file open failed",
+     re.IGNORECASE,
+ )
++# Any persist-failure line, for operator-facing evidence only (never a gate).
++_ANY_DBPERSIST_LINE = re.compile(r"%\S*DBPERSIST")
+ _DBPERSIST_DB_PATH = "bootflash:/.dbpersist/CTRL_MNG_CFG_DB/"
+ 
+ 
++def _dbpersist_log_lines(child):
++    """Every DBPERSIST line currently in the log buffer (raises on error)."""
++    child.drain(quiet=0.3, max_wait=3)
++    out = child.send_command("show logging | include DBPERSIST", read_timeout=30)
++    return [ln.strip() for ln in out.splitlines() if "DBPERSIST" in ln]
++
++
+ def dbpersist_log_count(child):
+-    """Count DBPERSIST entries in the log buffer, or None if unreadable.
++    """Count CONFIG-DB persist failures in the log buffer, or None if unreadable.
+ 
+     The bug's failure is ASYNC: `write mem` prints [OK] while the persist
+     fails seconds later as syslog (seen live). Comparing counts before/after
+-    a save is how an inline-clean-but-actually-failed save is caught."""
++    a save is how an inline-clean-but-actually-failed save is caught.
++
++    Lines are pulled with `| include DBPERSIST` and filtered in Python
++    against DBPERSIST_ERROR, so a DMI_STATE_DB (or any other non-config DB)
++    failure does not move the count."""
+     try:
+-        child.drain(quiet=0.3, max_wait=3)
+-        out = child.send_command("show logging | count DBPERSIST", read_timeout=30)
+-        m = re.search(r"=\s*(\d+)", out)
+-        if m:
+-            return int(m.group(1))
+-        out = child.send_command("show logging | include DBPERSIST", read_timeout=30)
+-        return len(re.findall(r"%\S*DBPERSIST", out))
++        return sum(1 for ln in _dbpersist_log_lines(child) if DBPERSIST_ERROR.search(ln))
+     except Exception:
+         return None
+ 
+ 
+ def dbpersist_bug_logged(child):
+-    """True if the log buffer shows the TDLDB persist failure. With console
+-    logging off, the buffer is where the syslog signature lands."""
++    """True if the log buffer shows the CONFIG-DB persist failure. With
++    console logging off, the buffer is where the syslog signature lands."""
+     try:
+-        child.drain(quiet=0.3, max_wait=3)
+-        out = child.send_command("show logging | include DBPERSIST", read_timeout=30)
+-        return bool(re.search(r"%\S*DBPERSIST", out))
++        return any(DBPERSIST_ERROR.search(ln) for ln in _dbpersist_log_lines(child))
+     except Exception:
+         return False
+ 
+ 
++def startup_config_contains(child, text):
++    """True if a line of startup-config contains `text` (positive proof the
++    save persisted — independent of any syslog heuristic).
++
++    `text` is handed to IOS `| include` as-is, so keep it to plain text
++    (filenames, keywords); the Python side does the exact substring check.
++    "startup-config is not present" and an unreadable NVRAM both read as
++    False. Raises only if the console itself fails."""
++    child.drain(quiet=0.3, max_wait=3)
++    out = child.send_command(f"show startup-config | include {text}", read_timeout=60)
++    return any(text in ln for ln in out.splitlines())
++
++
+ def clear_log_buffer(child):
+     """Clear the device log buffer (best effort).
+ 
+@@ -77,12 +105,9 @@
+ 
+ 
+ def dbpersist_log_lines(child, limit=3):
+-    """The last few DBPERSIST log lines, for failure evidence. Empty on error."""
++    """The last few DBPERSIST log lines (any DB), for failure evidence. Empty on error."""
+     try:
+-        child.drain(quiet=0.3, max_wait=3)
+-        out = child.send_command("show logging | include DBPERSIST", read_timeout=30)
+-        lines = [ln.strip() for ln in out.splitlines() if "DBPERSIST" in ln]
+-        return " | ".join(lines[-limit:])
++        return " | ".join(_dbpersist_log_lines(child)[-limit:])
+     except Exception:
+         return ""
+ 
+@@ -125,7 +150,7 @@
+             return "switch"
+         return None
+ 
+-    def save_config(self, console):
++    def save_config(self, console, verify_contains=None):
+         """Save config, self-healing the IOS-XE TDLDB persist bug.
+ 
+         A stale CTRL_MNG_CFG_DB *directory* under bootflash:/.dbpersist makes
+@@ -135,6 +160,15 @@
+         `no logging console` means the syslog signature may only be in the
+         log buffer, so an ambiguous save failure is confirmed there before
+         remediating.
++
++        `verify_contains`: text that must appear on a startup-config line
++        once the save has persisted (e.g. the image filename of the `boot
++        system` line the caller just configured). When given, the save is
++        judged by READING STARTUP-CONFIG BACK, not by the syslog heuristic:
++        the line present means success whatever the log buffer says; absent
++        means the save did not persist, even if `write mem` printed [OK].
++        Without it, only CONFIG-DB persist failures (DBPERSIST_ERROR) count
++        — unrelated DBPERSIST lines such as DMI_STATE_DB are ignored.
+         """
+         logger = console._logger
+         pre = dbpersist_log_count(console)
+@@ -145,13 +179,26 @@
+                 raise
+             output = None
+         if output is not None and not DBPERSIST_ERROR.search(output):
+-            # Inline output can show [OK] while the persist fails async as
+-            # syslog (seen live) — a NEW DBPERSIST entry means the save lied.
+-            post = dbpersist_log_count(console)
+-            logger.debug(f"DBPERSIST log count around save: before={pre} after={post}")
+-            if pre is None or post is None or post <= pre:
+-                return output
+-            logger.warning("Save printed [OK] but a new DBPERSIST failure hit the log — the save did not persist")
++            if verify_contains is not None:
++                if startup_config_contains(console, verify_contains):
++                    logger.debug(f"Save verified: '{verify_contains}' is in startup-config")
++                    return output
++                logger.warning(
++                    f"Save printed [OK] but '{verify_contains}' is not in startup-config "
++                    "— the save did not persist"
++                )
++            else:
++                # Inline output can show [OK] while the persist fails async as
++                # syslog (seen live) — a NEW config-DB DBPERSIST entry means
++                # the save lied.
++                post = dbpersist_log_count(console)
++                logger.debug(f"Config-DB DBPERSIST log count around save: before={pre} after={post}")
++                if pre is None or post is None or post <= pre:
++                    return output
++                logger.warning(
++                    "Save printed [OK] but a new config-DB DBPERSIST failure hit the log "
++                    "— the save did not persist"
++                )
+         clear_dbpersist_db(console, logger)
+         # Zero the baseline so stragglers from the FIRST save's async syslog
+         # can't be blamed on the retry (they otherwise land mid-comparison and
+@@ -162,8 +209,21 @@
+         # The bug's syslog arrives seconds AFTER the [OK] — give it a settle
+         # window before sampling, or a genuinely failed retry can pass.
+         time.sleep(6)
++        if verify_contains is not None:
++            if startup_config_contains(console, verify_contains):
++                logger.info(
++                    f"Config saved successfully after DBPERSIST cleanup "
++                    f"('{verify_contains}' verified in startup-config)"
++                )
++                return output
++            raise RuntimeError(
++                f"Config save still failing after deleting the stale DBPERSIST "
++                f"directory — '{verify_contains}' is not in startup-config — "
++                f"DBPERSIST log: {dbpersist_log_lines(console) or 'n/a'} — "
++                f"device said: {' '.join(output.split())[-300:]}"
++            )
+         post = dbpersist_log_count(console)
+-        logger.debug(f"DBPERSIST log count around retry save (post log-clear): before={pre} after={post}")
++        logger.debug(f"Config-DB DBPERSIST log count around retry save (post log-clear): before={pre} after={post}")
+         if DBPERSIST_ERROR.search(output) or (pre is not None and post is not None and post > pre):
+             evidence = dbpersist_log_lines(console)
+             raise RuntimeError(
+diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py
+--- a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py	2026-10-15 17:06:35.929311224 +0000
++++ b/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py	2026-10-15 17:06:35.943544294 +0000
+@@ -9,9 +9,25 @@
+ import time
+ 
+ from ..console import EXEC_PROMPT
+-from .cell_firmware import _CARRIER_TAG_MAP, _find_cellular_modules
++from .cell_firmware import _CARRIER_TAG_MAP, _find_cellular_modules, _wait_for_modem_ready
+ 
+-_CONFIG_ERROR = re.compile(r"%\s*(Invalid|Error|Incomplete|Ambiguous)", re.IGNORECASE)
++# IOS-XE rejects exec/config syntax with "% Invalid input ...", but the
++# cellular controller rejects a semantically-bad line with a bare
++# "Error: ..." (no '%' prefix) — e.g.
++#   Error: Cellular Modem in slot 0/1 is still in reset, we recommend to
++#   re-execute this cmd after 60 seconds
++# Both must count as rejections, or the step goes green with nothing applied.
++_CONFIG_ERROR = re.compile(
++    r"(?:%\s*(?:Invalid|Error|Incomplete|Ambiguous)|^\s*Error:)",
++    re.IGNORECASE | re.MULTILINE,
++)
++_MODEM_IN_RESET = re.compile(r"still in reset|re-execute this (?:cmd|command)", re.IGNORECASE)
++
++# The attach is retried on the device's own advice ("re-execute this cmd
++# after 60 seconds"); 10 × 60s matches the modem-ready timeout used by the
++# firmware step, after which a modem that is still in reset is a real failure.
++_ATTACH_RETRY_WAIT = 60
++_ATTACH_RETRIES = 10
+ 
+ 
+ def preflight(device, settings):
+@@ -54,6 +70,14 @@
+         _handle_confirm_prompts(child, logger)
+         _wait_for_modem_reboot(child, subslot, settings, logger)
+ 
++        # The syslog watch above is a hint, not proof: the modem reset kicked
++        # off by 'profile create' can outlive the %CELLWAN messages (seen on
++        # FirstNet SIMs), and the controller then rejects the attach with
++        # "Error: Cellular Modem ... is still in reset". Confirm the modem is
++        # answering before touching the controller, and retry the attach on
++        # the device's own advice if it still says it is in reset.
++        _wait_for_modem_ready(child, subslot, logger)
++
+         # Make the slot/profile binding explicit instead of relying on modem
+         # defaults — a modem reused from a prior deployment may have stale
+         # attach-profile mappings that silently override profile 1.
+@@ -75,7 +99,27 @@
+     return None
+ 
+ 
+-def _attach_data_profile(child, subslot, sim_slot, profile_id, logger):
++def _first_error_line(output):
++    """The first line of `output` that the controller flagged as an error, or None."""
++    m = _CONFIG_ERROR.search(output or "")
++    if not m:
++        return None
++    line_start = output.rfind("\n", 0, m.start()) + 1
++    line_end = output.find("\n", m.end())
++    if line_end == -1:
++        line_end = len(output)
++    return output[line_start:line_end].strip()
++
++
++def _attach_data_profile(
++    child,
++    subslot,
++    sim_slot,
++    profile_id,
++    logger,
++    retries=_ATTACH_RETRIES,
++    retry_wait=_ATTACH_RETRY_WAIT,
++):
+     """Bind the data-profile to the SIM slot in CONTROLLER config mode.
+ 
+     On these modules the attach is a `controller cellular X/Y/Z` config
+@@ -86,23 +130,48 @@
+          lte sim data-profile <n> attach-profile <n> slot <s>
+     (The older exec 'lte sim primary slot' line is dropped — it is not part of
+     the guide and the module rejects it.)
++
++    The controller refuses the line while the modem is still resetting after
++    the APN write ("Error: Cellular Modem in slot 0/1 is still in reset, we
++    recommend to re-execute this cmd after 60 seconds"). That is retried,
++    waiting `retry_wait` between attempts, up to `retries` times; any other
++    error, or a modem that never leaves reset, raises so the step fails
++    instead of going green with the SIM slot unbound.
+     """
+-    logger.info(
+-        f"Attaching data-profile {profile_id} under controller cellular {subslot} (slot {sim_slot})"
+-    )
+-    child.drain(quiet=0.3, max_wait=5)
+-    output = child.send_config_set(
+-        [
+-            f"controller cellular {subslot}",
+-            f" lte sim data-profile {profile_id} attach-profile {profile_id} slot {sim_slot}",
+-        ],
+-        read_timeout=30,
+-    )
+-    m = _CONFIG_ERROR.search(output)
+-    if m:
+-        raise RuntimeError(
+-            f"data-profile attach rejected under controller cellular {subslot}: {m.group(0).strip()}"
++    commands = [
++        f"controller cellular {subslot}",
++        f" lte sim data-profile {profile_id} attach-profile {profile_id} slot {sim_slot}",
++    ]
++    for attempt in range(1, retries + 1):
++        logger.info(
++            f"Attaching data-profile {profile_id} under controller cellular {subslot} "
++            f"(slot {sim_slot})" + (f" — attempt {attempt}/{retries}" if attempt > 1 else "")
+         )
++        child.drain(quiet=0.3, max_wait=5)
++        output = child.send_config_set(commands, read_timeout=30)
++
++        if _MODEM_IN_RESET.search(output or ""):
++            if attempt == retries:
++                raise RuntimeError(
++                    f"Modem in subslot {subslot} was still in reset after {retries} attach "
++                    f"attempts over {retries * retry_wait}s — data-profile {profile_id} "
++                    f"was NOT attached to SIM slot {sim_slot}"
++                )
++            logger.warning(
++                f"Modem in subslot {subslot} is still in reset — the device asks for a "
++                f"re-try; waiting {retry_wait}s (attempt {attempt}/{retries})"
++            )
++            time.sleep(retry_wait)
++            continue
++
++        error = _first_error_line(output)
++        if error:
++            raise RuntimeError(
++                f"data-profile attach rejected under controller cellular {subslot}: {error}"
++            )
++        if attempt > 1:
++            logger.info(f"Data-profile {profile_id} attached on attempt {attempt}")
++        return
+ 
+ 
+ def _handle_confirm_prompts(child, logger):
+diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/os_image.py b/nautobot_app_device_bootstrap/jobs/steps/os_image.py
+--- a/nautobot_app_device_bootstrap/jobs/steps/os_image.py	2026-10-15 17:06:35.935034901 +0000
++++ b/nautobot_app_device_bootstrap/jobs/steps/os_image.py	2026-10-15 17:06:35.943491859 +0000
+@@ -207,7 +207,11 @@
+     _set_boot_statement(child, image_file, logger)
+ 
+     child.drain(quiet=0.3, max_wait=3)  # clear any post-config %SYS syslog before netmiko re-detects the prompt
+-    child.save_config()
++    # Prove the save by reading the boot statement back from startup-config
++    # rather than trusting the DBPERSIST syslog heuristic: an IR1101 that
++    # logs an unrelated DMI_STATE_DB persist failure on every `write mem`
++    # failed this step while its startup-config was fine.
++    child.save_config(verify_contains=image_file)
+     if already_running:
+         logger.info(f"Boot system set to {image_file} — already running {target_version}, no reload needed")
+         return f"Already on {target_version}; boot config/image corrected"
+diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_profile.py b/nautobot_app_device_bootstrap/tests/test_cell_profile.py
+--- a/nautobot_app_device_bootstrap/tests/test_cell_profile.py	1970-01-01 00:00:00.000000000 +0000
++++ b/nautobot_app_device_bootstrap/tests/test_cell_profile.py	2026-10-15 17:06:35.943968034 +0000
+@@ -0,0 +1,161 @@
++"""APN profile step: the data-profile attach must not go green on a rejection.
++
++The controller rejects the attach with a bare "Error: ... still in reset"
++(no '%' prefix) while the modem is still rebooting after the APN write. Pins
++that this is retried on the device's own advice, that any other error fails
++the step, and that run() confirms the modem answers before the attach.
++No DB, no console: scripted fakes stand in for the netmiko session.
++"""
++from unittest import mock
++
++from django.test import SimpleTestCase
++
++from nautobot_app_device_bootstrap.jobs.steps import cell_profile as cp
++
++from .test_cell_firmware import FakeLogger, _clock
++
++SUBSLOT = "0/1/0"
++ATTACH = [
++    "controller cellular 0/1/0",
++    " lte sim data-profile 1 attach-profile 1 slot 0",
++]
++
++IN_RESET = (
++    "configure terminal\n"
++    "Enter configuration commands, one per line.  End with CNTL/Z.\n"
++    "TXBSPOTWR01(config)#controller cellular 0/1/0\n"
++    "TXBSPOTWR01(config-controller)# lte sim data-profile 1 attach-profile 1 slot 0\n"
++    "Error: Cellular Modem in slot 0/1 is still in reset, we recommend to re-execute "
++    "this cmd after 60 seconds\n"
++    "TXBSPOTWR01(config-controller)#end\n"
++)
++ACCEPTED = (
++    "configure terminal\n"
++    "TXBSPOTWR01(config)#controller cellular 0/1/0\n"
++    "TXBSPOTWR01(config-controller)# lte sim data-profile 1 attach-profile 1 slot 0\n"
++    "TXBSPOTWR01(config-controller)#end\n"
++)
++INVALID = (
++    "TXBSPOTWR01(config-controller)# lte sim data-profile 1 attach-profile 1 slot 0\n"
++    "                                    ^\n"
++    "% Invalid input detected at '^' marker.\n"
++)
++BARE_ERROR = (
++    "TXBSPOTWR01(config-controller)# lte sim data-profile 1 attach-profile 1 slot 0\n"
++    "Error: SIM slot 0 is not present\n"
++)
++
++
++class ConfigChild:
++    """send_config_set() answers from a script; the last output repeats."""
++
++    def __init__(self, outputs):
++        self.outputs = list(outputs)
++        self.config_sets = []
++
++    def drain(self, **kwargs):
++        pass
++
++    def send_config_set(self, commands, **kwargs):
++        self.config_sets.append(list(commands))
++        return self.outputs.pop(0) if len(self.outputs) > 1 else self.outputs[0]
++
++
++class ErrorDetectionTest(SimpleTestCase):
++    def test_bare_error_without_percent_is_an_error(self):
++        self.assertEqual(
++            cp._first_error_line(IN_RESET),
++            "Error: Cellular Modem in slot 0/1 is still in reset, we recommend to re-execute "
++            "this cmd after 60 seconds",
++        )
++
++    def test_percent_invalid_is_an_error(self):
++        self.assertEqual(cp._first_error_line(INVALID), "% Invalid input detected at '^' marker.")
++
++    def test_clean_output_is_not_an_error(self):
++        self.assertIsNone(cp._first_error_line(ACCEPTED))
++        self.assertIsNone(cp._first_error_line(""))
++
++    def test_in_reset_is_recognised(self):
++        self.assertTrue(cp._MODEM_IN_RESET.search(IN_RESET))
++        self.assertFalse(cp._MODEM_IN_RESET.search(ACCEPTED))
++
++
++class AttachDataProfileTest(SimpleTestCase):
++    def test_accepted_first_time_sends_controller_commands_once(self):
++        clock = _clock(self, module=cp)
++        child = ConfigChild([ACCEPTED])
++        cp._attach_data_profile(child, SUBSLOT, 0, 1, FakeLogger())
++        self.assertEqual(child.config_sets, [ATTACH])
++        self.assertEqual(clock.sleeps, [])
++
++    def test_still_in_reset_is_retried_after_the_advised_wait(self):
++        clock = _clock(self, module=cp)
++        child = ConfigChild([IN_RESET, IN_RESET, ACCEPTED])
++        logger = FakeLogger()
++
++        cp._attach_data_profile(child, SUBSLOT, 0, 1, logger, retries=10, retry_wait=60)
++
++        self.assertEqual(child.config_sets, [ATTACH, ATTACH, ATTACH])
++        self.assertEqual(clock.sleeps, [60, 60])
++        self.assertIn("still in reset", logger.text("warning"))
++        self.assertIn("attached on attempt 3", logger.text("info"))
++
++    def test_never_leaving_reset_fails_the_step(self):
++        clock = _clock(self, module=cp)
++        child = ConfigChild([IN_RESET])
++        with self.assertRaisesRegex(RuntimeError, r"still in reset after 3 attach attempts over 180s"):
++            cp._attach_data_profile(child, SUBSLOT, 0, 1, FakeLogger(), retries=3, retry_wait=60)
++        self.assertEqual(len(child.config_sets), 3)
++        self.assertEqual(clock.sleeps, [60, 60])
++
++    def test_percent_invalid_raises_without_retry(self):
++        clock = _clock(self, module=cp)
++        child = ConfigChild([INVALID])
++        with self.assertRaisesRegex(RuntimeError, r"attach rejected .*% Invalid input"):
++            cp._attach_data_profile(child, SUBSLOT, 0, 1, FakeLogger())
++        self.assertEqual(len(child.config_sets), 1)
++        self.assertEqual(clock.sleeps, [])
++
++    def test_other_bare_error_raises_without_retry(self):
++        _clock(self, module=cp)
++        child = ConfigChild([BARE_ERROR])
++        with self.assertRaisesRegex(RuntimeError, r"Error: SIM slot 0 is not present"):
++            cp._attach_data_profile(child, SUBSLOT, 0, 1, FakeLogger())
++        self.assertEqual(len(child.config_sets), 1)
++
++
++class RunOrderTest(SimpleTestCase):
++    """run() must confirm the modem answers BEFORE the controller attach."""
++
++    def test_modem_ready_gate_precedes_attach(self):
++        calls = []
++        device = mock.Mock()
++        device.tags.values_list.return_value = ["FirstNet"]
++        settings = {"cell_apn_firstnet": "34287.fn", "cell_apn_reboot_wait": 360}
++        child = mock.Mock()
++
++        with mock.patch.object(cp, "_find_cellular_modules", return_value=[("0/1/0", "P-5GS6-GL", SUBSLOT)]), \
++             mock.patch.object(cp, "_handle_confirm_prompts", side_effect=lambda *a, **k: calls.append("confirm")), \
++             mock.patch.object(cp, "_wait_for_modem_reboot", side_effect=lambda *a, **k: calls.append("syslog_wait")), \
++             mock.patch.object(cp, "_wait_for_modem_ready", side_effect=lambda *a, **k: calls.append("modem_ready")), \
++             mock.patch.object(cp, "_attach_data_profile", side_effect=lambda *a, **k: calls.append("attach")):
++            result = cp.run(child, device, None, settings, FakeLogger())
++
++        child.sendline.assert_called_once_with("cellular 0/1/0 lte profile create 1 34287.fn none ipv4")
++        self.assertEqual(calls, ["confirm", "syslog_wait", "modem_ready", "attach"])
++        self.assertEqual(result, "APN 34287.fn on profile 1, attached to SIM slot 0 (0/1/0)")
++
++    def test_modem_never_ready_fails_before_attach(self):
++        device = mock.Mock()
++        device.tags.values_list.return_value = ["FirstNet"]
++        settings = {"cell_apn_firstnet": "34287.fn"}
++
++        with mock.patch.object(cp, "_find_cellular_modules", return_value=[("0/1/0", "P-5GS6-GL", SUBSLOT)]), \
++             mock.patch.object(cp, "_handle_confirm_prompts"), \
++             mock.patch.object(cp, "_wait_for_modem_reboot"), \
++             mock.patch.object(cp, "_wait_for_modem_ready", side_effect=RuntimeError("did not report a firmware version")), \
++             mock.patch.object(cp, "_attach_data_profile") as attach:
++            with self.assertRaisesRegex(RuntimeError, "did not report a firmware version"):
++                cp.run(mock.Mock(), device, None, settings, FakeLogger())
++        attach.assert_not_called()
+diff -ruN a/nautobot_app_device_bootstrap/tests/test_console_save.py b/nautobot_app_device_bootstrap/tests/test_console_save.py
+--- a/nautobot_app_device_bootstrap/tests/test_console_save.py	2026-10-15 17:06:35.940523046 +0000
++++ b/nautobot_app_device_bootstrap/tests/test_console_save.py	2026-10-15 17:06:35.943646403 +0000
+@@ -82,36 +82,78 @@
+     return c
+ 
+ 
+-def _counts(*values):
+-    return [f"Number of lines which match regexp = {v}" for v in values]
++CFG_DB_FAIL = (
++    "Oct 15 16:52:23.627: %TDLDB-3-DBPERSIST_OPERATION_FAILURE: R0/0: dbm: Operation: persist, "
++    "DB: /bootflash/.dbpersist/CTRL_MNG_CFG_DB, Failure reason: Is a directory"
++)
++# Seen live on an IR1101 on EVERY `write mem` — the NETCONF/YANG state store,
++# nothing to do with startup-config. Must never fail a save.
++DMI_FAIL = (
++    "Oct 15 16:52:23.627: %TDLDB-3-DBPERSIST_OPERATION_FAILURE: R0/0: dbm: Operation: persist, "
++    "DB: /tmp/rp/tdldb/0/DMI_STATE_DB, Failure reason: Is a directory"
++)
++IMAGE = "ir1101-universalk9.17.15.04.SPA.bin"
++BOOT_LINE = f"boot system flash:{IMAGE}"
++
++
++def _log(*lines):
++    """One `show logging | include DBPERSIST` output."""
++    return "\n".join(lines)
++
++
++def _no_sleep(testcase):
++    from unittest import mock
++    from nautobot_app_device_bootstrap.jobs.drivers import cisco_ios
++
++    patcher = mock.patch.object(cisco_ios.time, "sleep", lambda s: None)
++    patcher.start()
++    testcase.addCleanup(patcher.stop)
+ 
+ 
+ class SaveConfigDelegationTest(SimpleTestCase):
++    def setUp(self):
++        _no_sleep(self)
++
+     def test_clean_save_single_attempt(self):
+-        fc = FakeConn(["[OK]"], {"count DBPERSIST": _counts(0)})
++        fc = FakeConn(["[OK]"], {"include DBPERSIST": [""]})
+         c = make_console(fc)
+         self.assertEqual(c.save_config(), "[OK]")
+         self.assertEqual(fc.calls.count("SAVE"), 1)
+         self.assertFalse(any("delete /force" in x for x in fc.calls))
+ 
++    def test_unrelated_db_persist_failure_is_ignored(self):
++        # The TXLSOOTWR01 case: write mem [OK], a NEW DBPERSIST line lands in
++        # the log, but it names DMI_STATE_DB — the save is fine.
++        fc = FakeConn(["[OK]"], {"include DBPERSIST": ["", _log(DMI_FAIL)]})
++        c = make_console(fc)
++        self.assertEqual(c.save_config(), "[OK]")
++        self.assertEqual(fc.calls.count("SAVE"), 1)
++        self.assertFalse(any("delete /force" in x for x in fc.calls))
++        self.assertFalse(any("did not persist" in m for _, m in c._logger.lines))
++
+     def test_save_exception_with_logged_bug_heals_and_resaves(self):
+         fc = FakeConn(
+             [RuntimeError("netmiko pattern fail"), "[OK]"],
+-            {
+-                "count DBPERSIST": _counts(2, 2, 2),
+-                "include DBPERSIST": ["%TDLDB-3-DBPERSIST_OPERATION_FAILURE ... Is a directory"],
+-            },
++            {"include DBPERSIST": [_log(CFG_DB_FAIL, CFG_DB_FAIL)]},
+         )
+         c = make_console(fc)
+         self.assertEqual(c.save_config(), "[OK]")
+         self.assertTrue(any("delete /force /recursive" in x for x in fc.calls))
+         self.assertTrue(any("DBPERSIST bug" in m for _, m in c._logger.lines))
+ 
+-    def test_ok_lie_detected_by_log_count_increase(self):
+-        # write mem prints [OK] inline while the persist fails async as syslog.
++    def test_save_exception_with_only_unrelated_db_lines_propagates(self):
++        fc = FakeConn([RuntimeError("real failure")], {"include DBPERSIST": [_log(DMI_FAIL)]})
++        c = make_console(fc)
++        with self.assertRaisesMessage(RuntimeError, "real failure"):
++            c.save_config()
++        self.assertFalse(any("delete /force" in x for x in fc.calls))
++
++    def test_ok_lie_detected_by_config_db_log_count_increase(self):
++        # write mem prints [OK] inline while the CONFIG-DB persist fails async
++        # as syslog: pre=1, post=2 → heal; after clear logging: 0, 0 → clean.
+         fc = FakeConn(
+             ["[OK]", "[OK]"],
+-            {"count DBPERSIST": _counts(1, 2, 2, 2)},  # pre=1, post=2 → heal; then 2,2 clean
++            {"include DBPERSIST": [_log(CFG_DB_FAIL), _log(CFG_DB_FAIL, CFG_DB_FAIL), "", ""]},
+         )
+         c = make_console(fc)
+         self.assertEqual(c.save_config(), "[OK]")
+@@ -119,10 +161,7 @@
+         self.assertTrue(any("did not persist" in m for _, m in c._logger.lines))
+ 
+     def test_unrelated_save_failure_propagates(self):
+-        fc = FakeConn(
+-            [RuntimeError("real failure")],
+-            {"count DBPERSIST": _counts(0), "include DBPERSIST": [""]},
+-        )
++        fc = FakeConn([RuntimeError("real failure")], {"include DBPERSIST": [""]})
+         c = make_console(fc)
+         with self.assertRaisesMessage(RuntimeError, "real failure"):
+             c.save_config()
+@@ -130,15 +169,82 @@
+     def test_heal_that_does_not_stick_raises(self):
+         fc = FakeConn(
+             [RuntimeError("fail"), "[OK]"],
+-            {
+-                "count DBPERSIST": _counts(2, 2, 3),  # heal pre=2, post=3 → still failing
+-                "include DBPERSIST": ["%TDLDB-3-DBPERSIST_OPERATION_FAILURE"],
+-            },
++            # pre=1, logged → heal; post-clear pre=0, post=1 → still failing
++            {"include DBPERSIST": [_log(CFG_DB_FAIL), _log(CFG_DB_FAIL), "", _log(CFG_DB_FAIL)]},
+         )
+         c = make_console(fc)
+         with self.assertRaisesMessage(RuntimeError, "still failing"):
+             c.save_config()
+ 
++    def test_heal_retry_ignores_unrelated_db_lines(self):
++        fc = FakeConn(
++            [RuntimeError("fail"), "[OK]"],
++            # pre=1, logged → heal; post-clear pre=0, post=0 (the DMI line is not counted)
++            {"include DBPERSIST": [_log(CFG_DB_FAIL), _log(CFG_DB_FAIL), "", _log(DMI_FAIL)]},
++        )
++        c = make_console(fc)
++        self.assertEqual(c.save_config(), "[OK]")
++        self.assertEqual(fc.calls.count("SAVE"), 2)
++
++
++class SaveConfigVerifyTest(SimpleTestCase):
++    """verify_contains: the save is judged by reading startup-config back."""
++
++    def setUp(self):
++        _no_sleep(self)
++
++    def test_verified_line_wins_over_dbpersist_noise(self):
++        fc = FakeConn(
++            ["[OK]"],
++            {"include DBPERSIST": [_log(DMI_FAIL)], "show startup-config": [BOOT_LINE]},
++        )
++        c = make_console(fc)
++        self.assertEqual(c.save_config(verify_contains=IMAGE), "[OK]")
++        self.assertEqual(fc.calls.count("SAVE"), 1)
++        self.assertIn(f"show startup-config | include {IMAGE}", fc.calls)
++        self.assertFalse(any("delete /force" in x for x in fc.calls))
++
++    def test_verified_line_wins_even_over_a_config_db_line(self):
++        # Positive proof beats the heuristic: NVRAM has the line, done.
++        fc = FakeConn(
++            ["[OK]"],
++            {"include DBPERSIST": ["", _log(CFG_DB_FAIL)], "show startup-config": [BOOT_LINE]},
++        )
++        c = make_console(fc)
++        self.assertEqual(c.save_config(verify_contains=IMAGE), "[OK]")
++        self.assertEqual(fc.calls.count("SAVE"), 1)
++
++    def test_missing_line_heals_and_passes_once_present(self):
++        fc = FakeConn(
++            ["[OK]", "[OK]"],
++            {
++                "include DBPERSIST": [""],
++                "show startup-config": ["startup-config is not present", BOOT_LINE],
++            },
++        )
++        c = make_console(fc)
++        self.assertEqual(c.save_config(verify_contains=IMAGE), "[OK]")
++        self.assertEqual(fc.calls.count("SAVE"), 2)
++        self.assertTrue(any("delete /force /recursive" in x for x in fc.calls))
++        self.assertTrue(any("not in startup-config" in m for _, m in c._logger.lines))
++        self.assertTrue(any("verified in startup-config" in m for _, m in c._logger.lines))
++
++    def test_missing_line_after_heal_raises(self):
++        fc = FakeConn(
++            ["[OK]", "[OK]"],
++            {"include DBPERSIST": [""], "show startup-config": ["startup-config is not present"]},
++        )
++        c = make_console(fc)
++        with self.assertRaisesRegex(RuntimeError, rf"still failing .* '{IMAGE}' is not in startup-config"):
++            c.save_config(verify_contains=IMAGE)
++        self.assertEqual(fc.calls.count("SAVE"), 2)
++
++    def test_substring_must_be_on_a_line(self):
++        fc = FakeConn(["[OK]", "[OK]"], {"include DBPERSIST": [""], "show startup-config": ["boot system flash:other.bin"]})
++        c = make_console(fc)
++        with self.assertRaisesRegex(RuntimeError, "not in startup-config"):
++            c.save_config(verify_contains=IMAGE)
++
+ 
+ class PromoteTest(SimpleTestCase):
+     def test_promote_redispatches_to_driver_device_type(self):
