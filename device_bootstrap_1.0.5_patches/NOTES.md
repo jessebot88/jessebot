@@ -1,4 +1,4 @@
-# Device Bootstrap 1.0.5 (patched) — two fixes from the 2026-10-15 runs
+# Device Bootstrap 1.0.5 (patched) — three fixes from the 2026-10-15 runs
 
 Version stays 1.0.5. Install the wheel with
 `pip install --force-reinstall --no-deps nautobot_app_device_bootstrap-1.0.5-py3-none-any.whl`,
@@ -37,7 +37,22 @@ Verizon passed only because that modem had finished rebooting before the watch r
 3. `_attach_data_profile()` retries on "still in reset" every 60 s, up to 10 times. Any other
    error raises at once; a modem that never leaves reset fails the step.
 
-Tests: `tests/test_cell_profile.py` (12 new).
+4. **Auto-sim is turned off before the profile write (added after the TXMNDOTWR01 run).**
+   That router's module reported `Firmware Activation mode = AUTO`. Auto-sim re-applies the
+   carrier image on modem resets and with it the carrier's DEFAULT profile set: profile 1 was
+   written as the configured APN, then read back at validation as `firstnet-broadband`/IPv4v6
+   (the AT&T defaults, with `attm2mglobal` on profile 4) and the SIM never attached. The Verizon
+   reset step already sends `no lte firmware auto-sim`; FirstNet routers skip that step. The APN
+   step now sends `no lte firmware auto-sim` under `controller cellular <subslot>` for every
+   carrier (a no-op where already off), with the same in-reset retry as the attach, then reads
+   `show cellular X firmware` and logs the activation mode (a module still reporting AUTO is a
+   warning, not a failure, since validation catches the end result). The Verizon-only
+   `lte cellular-profile-cleanup` is NOT sent here: it wipes profiles and resets the modem.
+   The controller attach and the auto-sim line share one helper (`_controller_config`).
+
+Tests: `tests/test_cell_profile.py` (17 new): error detection, retry/sleep sequences, fail-after-N,
+auto-sim command + mode read-back, and `run()` ordering auto-sim-off → confirm → syslog wait →
+modem-ready → attach.
 
 The syslog watch itself is untouched. Its `Graphit 5G` pattern returns without a prior
 MODEM_DOWN/RESTART event, which is a plausible reason it ended early on this 5G module, but the
@@ -87,7 +102,7 @@ startup-config read-back paths.
 
 Executed here against the patched tree with nautobot/django/netmiko stubbed out:
 test_console_save, test_cell_profile, test_cell_firmware, test_cell_firmware_reset, test_drivers,
-test_console_ports, test_transcript, test_ndes_resolution — 111 tests, all pass. The remaining
+test_console_ports, test_transcript, test_ndes_resolution — 116 tests, all pass. The remaining
 modules (test_validate_checks, test_pipeline_consistency, test_batch) need `netutils`,
 `django_filters` and real models and were not runnable in this environment; nothing in them
 touches the changed code paths. Run the full suite at home with `nautobot-server test`.

@@ -46,12 +46,26 @@ BARE_ERROR = (
 )
 
 
-class ConfigChild:
-    """send_config_set() answers from a script; the last output repeats."""
+FW_MANUAL = (
+    "Idx  Carrier         FwVersion        PriVersion     Status\n"
+    "1    ATT             02.17.08.00      030.094_001    Active\n"
+    "2    GENERIC         02.15.01.00      030.054_001    Inactive\n"
+    "\n"
+    "Firmware Activation mode  =  MANUAL\n"
+)
+FW_AUTO = FW_MANUAL.replace("MANUAL", "AUTO")
+AUTO_SIM_OFF = ["controller cellular 0/1/0", " no lte firmware auto-sim"]
 
-    def __init__(self, outputs):
+
+class ConfigChild:
+    """send_config_set() answers from a script; the last output repeats.
+    send_command() answers `show cellular X firmware` from `firmware`."""
+
+    def __init__(self, outputs, firmware=FW_MANUAL):
         self.outputs = list(outputs)
         self.config_sets = []
+        self.commands = []
+        self.firmware = firmware
 
     def drain(self, **kwargs):
         pass
@@ -59,6 +73,10 @@ class ConfigChild:
     def send_config_set(self, commands, **kwargs):
         self.config_sets.append(list(commands))
         return self.outputs.pop(0) if len(self.outputs) > 1 else self.outputs[0]
+
+    def send_command(self, cmd, **kwargs):
+        self.commands.append(cmd)
+        return self.firmware if "firmware" in cmd else ""
 
 
 class ErrorDetectionTest(SimpleTestCase):
@@ -99,12 +117,12 @@ class AttachDataProfileTest(SimpleTestCase):
         self.assertEqual(child.config_sets, [ATTACH, ATTACH, ATTACH])
         self.assertEqual(clock.sleeps, [60, 60])
         self.assertIn("still in reset", logger.text("warning"))
-        self.assertIn("attached on attempt 3", logger.text("info"))
+        self.assertIn("attach (slot 0) applied on attempt 3", logger.text("info"))
 
     def test_never_leaving_reset_fails_the_step(self):
         clock = _clock(self, module=cp)
         child = ConfigChild([IN_RESET])
-        with self.assertRaisesRegex(RuntimeError, r"still in reset after 3 attach attempts over 180s"):
+        with self.assertRaisesRegex(RuntimeError, r"still in reset after 3 attempts over 180s — data-profile 1 attach"):
             cp._attach_data_profile(child, SUBSLOT, 0, 1, FakeLogger(), retries=3, retry_wait=60)
         self.assertEqual(len(child.config_sets), 3)
         self.assertEqual(clock.sleeps, [60, 60])
@@ -112,7 +130,7 @@ class AttachDataProfileTest(SimpleTestCase):
     def test_percent_invalid_raises_without_retry(self):
         clock = _clock(self, module=cp)
         child = ConfigChild([INVALID])
-        with self.assertRaisesRegex(RuntimeError, r"attach rejected .*% Invalid input"):
+        with self.assertRaisesRegex(RuntimeError, r"attach \(slot 0\) rejected .*% Invalid input"):
             cp._attach_data_profile(child, SUBSLOT, 0, 1, FakeLogger())
         self.assertEqual(len(child.config_sets), 1)
         self.assertEqual(clock.sleeps, [])
@@ -125,8 +143,50 @@ class AttachDataProfileTest(SimpleTestCase):
         self.assertEqual(len(child.config_sets), 1)
 
 
+class DisableAutoSimTest(SimpleTestCase):
+    def test_sends_no_auto_sim_and_confirms_manual(self):
+        _clock(self, module=cp)
+        child = ConfigChild([ACCEPTED], firmware=FW_MANUAL)
+        logger = FakeLogger()
+        cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
+        self.assertIn("show cellular 0/1/0 firmware", child.commands)
+        self.assertIn("Firmware Activation mode = MANUAL", logger.text("info"))
+        self.assertEqual(logger.text("warning"), "")
+
+    def test_still_auto_afterwards_is_warned_not_fatal(self):
+        _clock(self, module=cp)
+        child = ConfigChild([ACCEPTED], firmware=FW_AUTO)
+        logger = FakeLogger()
+        cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertIn("still reports Firmware Activation mode = AUTO", logger.text("warning"))
+
+    def test_no_mode_line_is_accepted_quietly(self):
+        _clock(self, module=cp)
+        child = ConfigChild([ACCEPTED], firmware="Modem is not ready\n")
+        logger = FakeLogger()
+        cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertEqual(logger.text("warning"), "")
+
+    def test_in_reset_is_retried_then_applied(self):
+        clock = _clock(self, module=cp)
+        child = ConfigChild([IN_RESET, ACCEPTED])
+        logger = FakeLogger()
+        cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertEqual(child.config_sets, [AUTO_SIM_OFF, AUTO_SIM_OFF])
+        self.assertEqual(clock.sleeps, [60])
+        self.assertIn("no lte firmware auto-sim applied on attempt 2", logger.text("info"))
+
+    def test_rejection_raises(self):
+        _clock(self, module=cp)
+        child = ConfigChild([INVALID])
+        with self.assertRaisesRegex(RuntimeError, r"no lte firmware auto-sim rejected .*% Invalid input"):
+            cp._disable_auto_sim(child, SUBSLOT, FakeLogger())
+
+
 class RunOrderTest(SimpleTestCase):
-    """run() must confirm the modem answers BEFORE the controller attach."""
+    """run() must turn auto-sim off BEFORE the profile write, and confirm the
+    modem answers BEFORE the controller attach."""
 
     def test_modem_ready_gate_precedes_attach(self):
         calls = []
@@ -135,15 +195,23 @@ class RunOrderTest(SimpleTestCase):
         settings = {"cell_apn_firstnet": "34287.fn", "cell_apn_reboot_wait": 360}
         child = mock.Mock()
 
+        def autosim(c, subslot, logger):
+            calls.append("auto_sim_off")
+            c.sendline("<auto-sim marker>")  # proves it ran before the profile write
+
         with mock.patch.object(cp, "_find_cellular_modules", return_value=[("0/1/0", "P-5GS6-GL", SUBSLOT)]), \
+             mock.patch.object(cp, "_disable_auto_sim", side_effect=autosim), \
              mock.patch.object(cp, "_handle_confirm_prompts", side_effect=lambda *a, **k: calls.append("confirm")), \
              mock.patch.object(cp, "_wait_for_modem_reboot", side_effect=lambda *a, **k: calls.append("syslog_wait")), \
              mock.patch.object(cp, "_wait_for_modem_ready", side_effect=lambda *a, **k: calls.append("modem_ready")), \
              mock.patch.object(cp, "_attach_data_profile", side_effect=lambda *a, **k: calls.append("attach")):
             result = cp.run(child, device, None, settings, FakeLogger())
 
-        child.sendline.assert_called_once_with("cellular 0/1/0 lte profile create 1 34287.fn none ipv4")
-        self.assertEqual(calls, ["confirm", "syslog_wait", "modem_ready", "attach"])
+        self.assertEqual(
+            [c.args[0] for c in child.sendline.call_args_list],
+            ["<auto-sim marker>", "cellular 0/1/0 lte profile create 1 34287.fn none ipv4"],
+        )
+        self.assertEqual(calls, ["auto_sim_off", "confirm", "syslog_wait", "modem_ready", "attach"])
         self.assertEqual(result, "APN 34287.fn on profile 1, attached to SIM slot 0 (0/1/0)")
 
     def test_modem_never_ready_fails_before_attach(self):
@@ -152,6 +220,7 @@ class RunOrderTest(SimpleTestCase):
         settings = {"cell_apn_firstnet": "34287.fn"}
 
         with mock.patch.object(cp, "_find_cellular_modules", return_value=[("0/1/0", "P-5GS6-GL", SUBSLOT)]), \
+             mock.patch.object(cp, "_disable_auto_sim"), \
              mock.patch.object(cp, "_handle_confirm_prompts"), \
              mock.patch.object(cp, "_wait_for_modem_reboot"), \
              mock.patch.object(cp, "_wait_for_modem_ready", side_effect=RuntimeError("did not report a firmware version")), \

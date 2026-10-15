@@ -9,7 +9,12 @@ import re
 import time
 
 from ..console import EXEC_PROMPT
-from .cell_firmware import _CARRIER_TAG_MAP, _find_cellular_modules, _wait_for_modem_ready
+from .cell_firmware import (
+    _CARRIER_TAG_MAP,
+    _find_cellular_modules,
+    _parse_firmware_table,
+    _wait_for_modem_ready,
+)
 
 # IOS-XE rejects exec/config syntax with "% Invalid input ...", but the
 # cellular controller rejects a semantically-bad line with a bare
@@ -62,6 +67,17 @@ def run(child, device, session, settings, logger):
         return "No carrier APN configured — skipped"
 
     for bay_name, module_model, subslot in modules:
+        # With "Firmware Activation mode = AUTO" (lte firmware auto-sim) the
+        # module re-evaluates the SIM on every modem reset and re-applies the
+        # carrier image, which restores the carrier DEFAULT profiles — seen
+        # live on a FirstNet router: profile 1 was written as the configured
+        # APN, then read back at validation as firstnet-broadband/IPv4v6 (the
+        # AT&T defaults) with the SIM never attaching. The Verizon reset step
+        # already turns auto-sim off; do it here for every carrier (a no-op
+        # where it is already off) BEFORE the profile write, so nothing can
+        # put the defaults back afterwards.
+        _disable_auto_sim(child, subslot, logger)
+
         cmd = f"cellular {subslot} lte profile create 1 {apn} none ipv4"
         logger.info(f"Applying APN profile: {cmd}")
 
@@ -111,6 +127,83 @@ def _first_error_line(output):
     return output[line_start:line_end].strip()
 
 
+def _controller_config(
+    child,
+    subslot,
+    lines,
+    what,
+    logger,
+    retries=_ATTACH_RETRIES,
+    retry_wait=_ATTACH_RETRY_WAIT,
+):
+    """Apply `lines` under `controller cellular <subslot>`, retrying while the
+    modem is in reset.
+
+    The controller refuses its lines while the modem is still resetting
+    ("Error: Cellular Modem in slot 0/1 is still in reset, we recommend to
+    re-execute this cmd after 60 seconds"). That is retried, waiting
+    `retry_wait` between attempts, up to `retries` times; any other error, or
+    a modem that never leaves reset, raises so the step fails instead of
+    going green with the change not applied. `what` names the change in log
+    and error text (e.g. "data-profile 1 attach").
+    """
+    commands = [f"controller cellular {subslot}", *lines]
+    for attempt in range(1, retries + 1):
+        logger.info(
+            f"Applying {what} under controller cellular {subslot}"
+            + (f" — attempt {attempt}/{retries}" if attempt > 1 else "")
+        )
+        child.drain(quiet=0.3, max_wait=5)
+        output = child.send_config_set(commands, read_timeout=30)
+
+        if _MODEM_IN_RESET.search(output or ""):
+            if attempt == retries:
+                raise RuntimeError(
+                    f"Modem in subslot {subslot} was still in reset after {retries} "
+                    f"attempts over {retries * retry_wait}s — {what} was NOT applied"
+                )
+            logger.warning(
+                f"Modem in subslot {subslot} is still in reset — the device asks for a "
+                f"re-try; waiting {retry_wait}s (attempt {attempt}/{retries})"
+            )
+            time.sleep(retry_wait)
+            continue
+
+        error = _first_error_line(output)
+        if error:
+            raise RuntimeError(f"{what} rejected under controller cellular {subslot}: {error}")
+        if attempt > 1:
+            logger.info(f"{what} applied on attempt {attempt}")
+        return
+
+
+def _disable_auto_sim(child, subslot, logger):
+    """Turn off `lte firmware auto-sim` under the controller and confirm the
+    module reports MANUAL activation mode.
+
+    Auto-sim re-applies the carrier image on modem resets and, with it, the
+    carrier's default profile set — which overwrites the APN profile this
+    step writes. Idempotent: harmless where the Verizon reset step already
+    turned it off. A module that prints no "Firmware Activation mode" line
+    cannot be confirmed and is left at the command's word; one that still
+    reads AUTO afterwards is logged as a warning, since the profile wipe is
+    then still possible (validation will catch the end result).
+    """
+    logger.info(f"Disabling firmware auto-sim on subslot {subslot} so the carrier defaults cannot overwrite the APN profile")
+    _controller_config(child, subslot, [" no lte firmware auto-sim"], "no lte firmware auto-sim", logger)
+
+    child.drain(quiet=0.3, max_wait=3)
+    output = child.send_command(f"show cellular {subslot} firmware", read_timeout=30)
+    _, mode = _parse_firmware_table(output)
+    if mode == "auto":
+        logger.warning(
+            f"Subslot {subslot} still reports Firmware Activation mode = AUTO after "
+            "'no lte firmware auto-sim' — the carrier defaults may still overwrite the profile"
+        )
+    elif mode:
+        logger.info(f"Subslot {subslot}: Firmware Activation mode = {mode.upper()}")
+
+
 def _attach_data_profile(
     child,
     subslot,
@@ -129,49 +222,18 @@ def _attach_data_profile(
         controller cellular <subslot>
          lte sim data-profile <n> attach-profile <n> slot <s>
     (The older exec 'lte sim primary slot' line is dropped — it is not part of
-    the guide and the module rejects it.)
-
-    The controller refuses the line while the modem is still resetting after
-    the APN write ("Error: Cellular Modem in slot 0/1 is still in reset, we
-    recommend to re-execute this cmd after 60 seconds"). That is retried,
-    waiting `retry_wait` between attempts, up to `retries` times; any other
-    error, or a modem that never leaves reset, raises so the step fails
-    instead of going green with the SIM slot unbound.
+    the guide and the module rejects it.) Retries while the modem is still in
+    reset after the APN write — see _controller_config.
     """
-    commands = [
-        f"controller cellular {subslot}",
-        f" lte sim data-profile {profile_id} attach-profile {profile_id} slot {sim_slot}",
-    ]
-    for attempt in range(1, retries + 1):
-        logger.info(
-            f"Attaching data-profile {profile_id} under controller cellular {subslot} "
-            f"(slot {sim_slot})" + (f" — attempt {attempt}/{retries}" if attempt > 1 else "")
-        )
-        child.drain(quiet=0.3, max_wait=5)
-        output = child.send_config_set(commands, read_timeout=30)
-
-        if _MODEM_IN_RESET.search(output or ""):
-            if attempt == retries:
-                raise RuntimeError(
-                    f"Modem in subslot {subslot} was still in reset after {retries} attach "
-                    f"attempts over {retries * retry_wait}s — data-profile {profile_id} "
-                    f"was NOT attached to SIM slot {sim_slot}"
-                )
-            logger.warning(
-                f"Modem in subslot {subslot} is still in reset — the device asks for a "
-                f"re-try; waiting {retry_wait}s (attempt {attempt}/{retries})"
-            )
-            time.sleep(retry_wait)
-            continue
-
-        error = _first_error_line(output)
-        if error:
-            raise RuntimeError(
-                f"data-profile attach rejected under controller cellular {subslot}: {error}"
-            )
-        if attempt > 1:
-            logger.info(f"Data-profile {profile_id} attached on attempt {attempt}")
-        return
+    _controller_config(
+        child,
+        subslot,
+        [f" lte sim data-profile {profile_id} attach-profile {profile_id} slot {sim_slot}"],
+        f"data-profile {profile_id} attach (slot {sim_slot})",
+        logger,
+        retries=retries,
+        retry_wait=retry_wait,
+    )
 
 
 def _handle_confirm_prompts(child, logger):
