@@ -1,4 +1,4 @@
-# Device Bootstrap 1.0.6 — FirstNet APN profile fix
+# Device Bootstrap 1.0.5 (patched) — FirstNet APN profile fix
 
 ## What went wrong (from the TXBSPOTWR01 run on 2026-10-15)
 
@@ -17,7 +17,7 @@ same commands by hand after waiting worked, which is exactly what the device ask
 Verizon passed because its modem reboot happened to be finished by the time the syslog watch
 returned. On the FirstNet SIM the modem was still resetting after the watch gave up.
 
-## What 1.0.6 changes (`jobs/steps/cell_profile.py` only, no migration)
+## What the patch changes (`jobs/steps/cell_profile.py` only, no migration)
 
 1. **Bare `Error:` lines now count as rejections.** `_CONFIG_ERROR` matches `^Error:` as well
    as the `%`-prefixed forms, and the raised message quotes the full offending line.
@@ -36,18 +36,18 @@ cell_firmware_reset suites still pass (56 tests total).
 
 ## Files here
 
-- `nautobot_app_device_bootstrap-1.0.6-py3-none-any.whl` — the 1.0.5 wheel rebuilt with the
-  patched step, the new test file and the version bumped to 1.0.6. Install with
-  `pip install --force-reinstall nautobot_app_device_bootstrap-1.0.6-py3-none-any.whl`,
+- `nautobot_app_device_bootstrap-1.0.5-py3-none-any.whl` — the 1.0.5 wheel rebuilt with the
+  patched step and the new test file; the version stays 1.0.5. Because the version number is
+  unchanged, pip will consider it already installed, so use
+  `pip install --force-reinstall --no-deps nautobot_app_device_bootstrap-1.0.5-py3-none-any.whl`,
   then `nautobot-server post_upgrade` and restart the workers.
 - `cell_profile.py` — the patched step, drop-in for `nautobot_app_device_bootstrap/jobs/steps/cell_profile.py`.
 - `test_cell_profile.py` — drop into `nautobot_app_device_bootstrap/tests/`.
 - `cell_profile.diff` — unified diff against 1.0.5 for applying to the source repo at home
   (`git apply cell_profile.diff` from the repo root).
 
-Still to do in the source repo: bump the version in `pyproject.toml`, and add a
-`docs/admin/release_notes/version_1.0.6.md` entry (the wheel's bundled HTML docs were not
-regenerated, so they still stop at 1.0.5).
+Still to do in the source repo: apply the diff and add a line to the 1.0.5 release notes
+if you want the change recorded there (the wheel's bundled HTML docs were not regenerated).
 
 ## Not changed, worth knowing
 
