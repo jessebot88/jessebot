@@ -1,6 +1,6 @@
 diff -ruN a/nautobot_app_device_bootstrap/jobs/console.py b/nautobot_app_device_bootstrap/jobs/console.py
---- a/nautobot_app_device_bootstrap/jobs/console.py	2026-10-15 17:06:35.932766988 +0000
-+++ b/nautobot_app_device_bootstrap/jobs/console.py	2026-10-15 17:35:48.045901786 +0000
+--- a/nautobot_app_device_bootstrap/jobs/console.py	2026-10-15 18:27:11.340810587 +0000
++++ b/nautobot_app_device_bootstrap/jobs/console.py	2026-10-15 18:27:11.408857748 +0000
 @@ -413,11 +413,12 @@
      def find_prompt(self):
          return self.conn.find_prompt()
@@ -18,8 +18,8 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/console.py b/nautobot_app_device_
      def is_alive(self):
          try:
 diff -ruN a/nautobot_app_device_bootstrap/jobs/drivers/base.py b/nautobot_app_device_bootstrap/jobs/drivers/base.py
---- a/nautobot_app_device_bootstrap/jobs/drivers/base.py	2026-10-15 17:06:35.930968539 +0000
-+++ b/nautobot_app_device_bootstrap/jobs/drivers/base.py	2026-10-15 17:35:48.044318194 +0000
+--- a/nautobot_app_device_bootstrap/jobs/drivers/base.py	2026-10-15 18:27:11.348473498 +0000
++++ b/nautobot_app_device_bootstrap/jobs/drivers/base.py	2026-10-15 18:27:11.408261787 +0000
 @@ -51,10 +51,13 @@
          """Settings key of the pipeline that runs for a device class."""
          return self.pipeline_keys[device_class]
@@ -36,8 +36,8 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/drivers/base.py b/nautobot_app_de
          """
          raise NotImplementedError
 diff -ruN a/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py b/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py
---- a/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py	2026-10-15 17:06:35.930939838 +0000
-+++ b/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py	2026-10-15 17:35:48.043419032 +0000
+--- a/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py	2026-10-15 18:27:11.354734194 +0000
++++ b/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py	2026-10-15 18:27:11.407933440 +0000
 @@ -18,46 +18,74 @@
  
  # IOS-XE TDLDB persist bug: a stale CTRL_MNG_CFG_DB directory under
@@ -228,10 +228,79 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/drivers/cisco_ios.py b/nautobot_a
          if DBPERSIST_ERROR.search(output) or (pre is not None and post is not None and post > pre):
              evidence = dbpersist_log_lines(console)
              raise RuntimeError(
+diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_firmware.py b/nautobot_app_device_bootstrap/jobs/steps/cell_firmware.py
+--- a/nautobot_app_device_bootstrap/jobs/steps/cell_firmware.py	2026-10-15 18:27:11.361894651 +0000
++++ b/nautobot_app_device_bootstrap/jobs/steps/cell_firmware.py	2026-10-15 18:27:11.408648037 +0000
+@@ -52,6 +52,14 @@
+ _VERSION_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)")
+ _CARRIER_RE = re.compile(r"Carrier\s*=\s*([^\s,]+)", re.IGNORECASE)
+ _NOT_READY_RE = re.compile(r"% Invalid|not ready|not present", re.IGNORECASE)
++# `show cellular X firmware` while the modem is (re)initialising: "Modem is
++# still down, please wait for modem to come up" / "Modem is not ready". Seen
++# live on an EM9293 right after the APN write WHILE `show cellular X
++# hardware` already said "Modem Online" — so this answer must short-circuit
++# the hardware fallback, or the readiness gate passes a modem the controller
++# still rejects as "in reset". (A "% Invalid" from a module with no firmware
++# table command is NOT in here: that one must fall back to hardware.)
++_MODEM_DOWN_RE = re.compile(r"still down|not ready|wait for modem", re.IGNORECASE)
+ # `show cellular X firmware` rows: "4    VERIZON    02.17.08.00    030.092_001    Active"
+ _FW_ROW_RE = re.compile(
+     r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(Active|Inactive)\s*$", re.IGNORECASE | re.MULTILINE
+@@ -268,6 +276,8 @@
+     (None, None) while the modem isn't answering.
+     """
+     output = child.send_command(f"show cellular {subslot} firmware", read_timeout=30)
++    if _MODEM_DOWN_RE.search(output or ""):
++        return None, None
+     rows, _ = _parse_firmware_table(output)
+     for row in rows:
+         if row["active"]:
+diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_firmware_reset.py b/nautobot_app_device_bootstrap/jobs/steps/cell_firmware_reset.py
+--- a/nautobot_app_device_bootstrap/jobs/steps/cell_firmware_reset.py	2026-10-15 18:27:11.367971825 +0000
++++ b/nautobot_app_device_bootstrap/jobs/steps/cell_firmware_reset.py	2026-10-15 18:27:11.408814479 +0000
+@@ -1,8 +1,12 @@
+-"""Cellular carrier-firmware factory reset (the Verizon modem workaround).
++"""Cellular carrier-firmware factory reset.
+ 
+-Vendor procedure for modems that will not connect on Verizon after
+-provisioning, applied to every Verizon router (the fleet's SIMs are
+-provisioned for Verizon, and the procedure is deterministic):
++Vendor procedure for modems that will not connect after provisioning. It
++began as the Verizon workaround and now runs for EVERY carrier-tagged router
++with a cellular module: on FirstNet, auto-sim left on meant a later modem
++reset restored the AT&T default profiles over the APN the pipeline had
++written, and one deterministic, bench-tested path for all carriers beats a
++per-carrier special case. The carrier image re-activated in step 4 comes
++from _CARRIER_FW_NAMES (Verizon → VERIZON, FirstNet → ATT).
+ 
+     1. controller Cellular X: `no lte firmware auto-sim`,
+        `lte cellular-profile-cleanup`
+@@ -34,8 +38,10 @@
+     _resolve_carrier,
+ )
+ 
+-# Carriers whose provisioning includes the factory-reset procedure.
+-RESET_CARRIERS = ("verizon",)
++# Carriers whose provisioning includes the factory-reset procedure — every
++# carrier the pipeline knows (see _CARRIER_TAG_MAP). A router with a modem
++# but no carrier tag is skipped: there is no image to re-activate for it.
++RESET_CARRIERS = ("verizon", "firstnet")
+ 
+ _GENERIC = "generic"
+ _CONFIG_ERROR = re.compile(r"%\s*(Invalid|Error|Incomplete|Ambiguous)", re.IGNORECASE)
+@@ -51,7 +57,7 @@
+ 
+ 
+ def applies_to(device, settings):
+-    """Verizon-tagged devices with a cellular module."""
++    """Carrier-tagged devices with a cellular module."""
+     if not _find_cellular_modules(device):
+         return False
+     return _carrier_key_from_tags(device) in RESET_CARRIERS
 diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py
---- a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py	2026-10-15 17:06:35.929311224 +0000
-+++ b/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py	2026-10-15 17:35:48.045572807 +0000
-@@ -9,9 +9,30 @@
+--- a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py	2026-10-15 18:27:11.374631240 +0000
++++ b/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py	2026-10-15 18:27:11.408607922 +0000
+@@ -9,9 +9,37 @@
  import time
  
  from ..console import EXEC_PROMPT
@@ -240,6 +309,7 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
 -_CONFIG_ERROR = re.compile(r"%\s*(Invalid|Error|Incomplete|Ambiguous)", re.IGNORECASE)
 +from .cell_firmware import (
 +    _CARRIER_TAG_MAP,
++    _MODEM_DOWN_RE,
 +    _find_cellular_modules,
 +    _parse_firmware_table,
 +    _wait_for_modem_ready,
@@ -262,10 +332,16 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
 +# firmware step, after which a modem that is still in reset is a real failure.
 +_ATTACH_RETRY_WAIT = 60
 +_ATTACH_RETRIES = 10
++
++# Turning auto-sim off resets the modem. Watch for it to drop for this long
++# before concluding it didn't; once it drops, the normal readiness wait
++# (up to 600s) takes over.
++_AUTO_SIM_RESET_WINDOW = 90
++_AUTO_SIM_RESET_POLL = 10
  
  
  def preflight(device, settings):
-@@ -46,6 +67,17 @@
+@@ -46,6 +74,17 @@
          return "No carrier APN configured — skipped"
  
      for bay_name, module_model, subslot in modules:
@@ -274,16 +350,16 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
 +        # carrier image, which restores the carrier DEFAULT profiles — seen
 +        # live on a FirstNet router: profile 1 was written as the configured
 +        # APN, then read back at validation as firstnet-broadband/IPv4v6 (the
-+        # AT&T defaults) with the SIM never attaching. The Verizon reset step
-+        # already turns auto-sim off; do it here for every carrier (a no-op
-+        # where it is already off) BEFORE the profile write, so nothing can
-+        # put the defaults back afterwards.
++        # AT&T defaults) with the SIM never attaching. The reset step turns
++        # auto-sim off for every carrier; this is the safety net for
++        # pipelines without it, and it must come BEFORE the profile write
++        # (the change itself resets the modem).
 +        _disable_auto_sim(child, subslot, logger)
 +
          cmd = f"cellular {subslot} lte profile create 1 {apn} none ipv4"
          logger.info(f"Applying APN profile: {cmd}")
  
-@@ -54,6 +86,14 @@
+@@ -54,6 +93,14 @@
          _handle_confirm_prompts(child, logger)
          _wait_for_modem_reboot(child, subslot, settings, logger)
  
@@ -298,7 +374,7 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
          # Make the slot/profile binding explicit instead of relying on modem
          # defaults — a modem reused from a prior deployment may have stale
          # attach-profile mappings that silently override profile 1.
-@@ -75,7 +115,104 @@
+@@ -75,7 +122,149 @@
      return None
  
  
@@ -365,24 +441,69 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
 +        return
 +
 +
-+def _disable_auto_sim(child, subslot, logger):
-+    """Turn off `lte firmware auto-sim` under the controller and confirm the
-+    module reports MANUAL activation mode.
-+
-+    Auto-sim re-applies the carrier image on modem resets and, with it, the
-+    carrier's default profile set — which overwrites the APN profile this
-+    step writes. Idempotent: harmless where the Verizon reset step already
-+    turned it off. A module that prints no "Firmware Activation mode" line
-+    cannot be confirmed and is left at the command's word; one that still
-+    reads AUTO afterwards is logged as a warning, since the profile wipe is
-+    then still possible (validation will catch the end result).
-+    """
-+    logger.info(f"Disabling firmware auto-sim on subslot {subslot} so the carrier defaults cannot overwrite the APN profile")
-+    _controller_config(child, subslot, [" no lte firmware auto-sim"], "no lte firmware auto-sim", logger)
-+
++def _activation_mode(child, subslot):
++    """'auto' / 'manual' from `show cellular X firmware`, or None if the
++    module prints no "Firmware Activation mode" line."""
 +    child.drain(quiet=0.3, max_wait=3)
 +    output = child.send_command(f"show cellular {subslot} firmware", read_timeout=30)
 +    _, mode = _parse_firmware_table(output)
++    return mode
++
++
++def _absorb_modem_reset(child, subslot, logger, window=_AUTO_SIM_RESET_WINDOW, poll=_AUTO_SIM_RESET_POLL):
++    """Wait out the modem reset that follows the auto-sim change.
++
++    Watches `show cellular X firmware` for the modem to drop ("still down" /
++    "not ready", or the CLI not answering), then waits for it to report a
++    firmware version again, so the profile write that follows does not land
++    mid-reset and get lost. A modem that has not dropped within `window`
++    seconds is taken as not having reset. Returns True if a reset was seen.
++    """
++    from netmiko.exceptions import ReadTimeout
++
++    deadline = time.time() + window
++    while time.time() < deadline:
++        child.drain(quiet=0.3, max_wait=3)
++        try:
++            output = child.send_command(f"show cellular {subslot} firmware", read_timeout=30)
++            down = bool(_MODEM_DOWN_RE.search(output or ""))
++        except ReadTimeout:
++            down = True
++        if down:
++            logger.info(f"Subslot {subslot}: modem went down for the auto-sim change — waiting for it to come back")
++            _wait_for_modem_ready(child, subslot, logger)
++            return True
++        time.sleep(poll)
++    logger.info(f"Subslot {subslot}: no modem reset observed within {window}s of the auto-sim change — continuing")
++    return False
++
++
++def _disable_auto_sim(child, subslot, logger):
++    """Make sure `lte firmware auto-sim` is off before the profile is written.
++
++    Auto-sim re-applies the carrier image on modem resets and, with it, the
++    carrier's default profile set — which overwrites the APN profile this
++    step writes. Only acts when the module reports Firmware Activation mode
++    AUTO (or prints no mode at all): a module already on MANUAL — the normal
++    case, since the reset step turns auto-sim off for every carrier — is
++    left alone, because the change itself resets the modem. When the command
++    is sent, that reset is waited out before returning. A module that still
++    reads AUTO afterwards is logged as a warning, since the profile wipe is
++    then still possible (validation catches the end result).
++    """
++    mode = _activation_mode(child, subslot)
++    if mode == "manual":
++        logger.info(f"Subslot {subslot}: Firmware Activation mode = MANUAL — auto-sim already off")
++        return
++
++    logger.info(
++        f"Subslot {subslot}: Firmware Activation mode = {(mode or 'not reported').upper()} — "
++        "disabling auto-sim so the carrier defaults cannot overwrite the APN profile"
++    )
++    _controller_config(child, subslot, [" no lte firmware auto-sim"], "no lte firmware auto-sim", logger)
++    _absorb_modem_reset(child, subslot, logger)
++
++    mode = _activation_mode(child, subslot)
 +    if mode == "auto":
 +        logger.warning(
 +            f"Subslot {subslot} still reports Firmware Activation mode = AUTO after "
@@ -404,7 +525,7 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
      """Bind the data-profile to the SIM slot in CONTROLLER config mode.
  
      On these modules the attach is a `controller cellular X/Y/Z` config
-@@ -85,24 +222,18 @@
+@@ -85,24 +274,18 @@
          controller cellular <subslot>
           lte sim data-profile <n> attach-profile <n> slot <s>
      (The older exec 'lte sim primary slot' line is dropped — it is not part of
@@ -414,14 +535,6 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
      """
 -    logger.info(
 -        f"Attaching data-profile {profile_id} under controller cellular {subslot} (slot {sim_slot})"
--    )
--    child.drain(quiet=0.3, max_wait=5)
--    output = child.send_config_set(
--        [
--            f"controller cellular {subslot}",
--            f" lte sim data-profile {profile_id} attach-profile {profile_id} slot {sim_slot}",
--        ],
--        read_timeout=30,
 +    _controller_config(
 +        child,
 +        subslot,
@@ -431,6 +544,14 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
 +        retries=retries,
 +        retry_wait=retry_wait,
      )
+-    child.drain(quiet=0.3, max_wait=5)
+-    output = child.send_config_set(
+-        [
+-            f"controller cellular {subslot}",
+-            f" lte sim data-profile {profile_id} attach-profile {profile_id} slot {sim_slot}",
+-        ],
+-        read_timeout=30,
+-    )
 -    m = _CONFIG_ERROR.search(output)
 -    if m:
 -        raise RuntimeError(
@@ -440,8 +561,8 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/cell_profile.py b/nautobot_
  
  def _handle_confirm_prompts(child, logger):
 diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/os_image.py b/nautobot_app_device_bootstrap/jobs/steps/os_image.py
---- a/nautobot_app_device_bootstrap/jobs/steps/os_image.py	2026-10-15 17:06:35.935034901 +0000
-+++ b/nautobot_app_device_bootstrap/jobs/steps/os_image.py	2026-10-15 17:35:48.044847174 +0000
+--- a/nautobot_app_device_bootstrap/jobs/steps/os_image.py	2026-10-15 18:27:11.381937088 +0000
++++ b/nautobot_app_device_bootstrap/jobs/steps/os_image.py	2026-10-15 18:27:11.408425315 +0000
 @@ -207,7 +207,11 @@
      _set_boot_statement(child, image_file, logger)
  
@@ -455,10 +576,73 @@ diff -ruN a/nautobot_app_device_bootstrap/jobs/steps/os_image.py b/nautobot_app_
      if already_running:
          logger.info(f"Boot system set to {image_file} — already running {target_version}, no reload needed")
          return f"Already on {target_version}; boot config/image corrected"
+diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_firmware.py b/nautobot_app_device_bootstrap/tests/test_cell_firmware.py
+--- a/nautobot_app_device_bootstrap/tests/test_cell_firmware.py	2026-10-15 18:27:11.390101314 +0000
++++ b/nautobot_app_device_bootstrap/tests/test_cell_firmware.py	2026-10-15 18:27:11.409462270 +0000
+@@ -205,6 +205,21 @@
+         self.assertIsNone(cf._carrier_key_from_tags(self._device("Router")))
+ 
+ 
++MODEM_STILL_DOWN = "Modem is still down, please wait for modem to come up\n"
++
++
++class ReadModemStateTest(SimpleTestCase):
++    def test_still_down_from_firmware_command_is_not_ready_even_if_hardware_says_online(self):
++        # Seen live on an EM9293 right after the APN write.
++        child = FakeChild(firmware=[MODEM_STILL_DOWN], hardware=[HW_EM9293])
++        self.assertEqual(cf._read_modem_state(child, "0/1/0"), (None, None))
++        self.assertFalse(any("hardware" in c for c in child.calls))
++
++    def test_no_firmware_table_command_still_falls_back_to_hardware(self):
++        child = FakeChild(firmware=["% Invalid input detected at '^' marker.\n"], hardware=[HW_EM9293])
++        self.assertEqual(cf._read_modem_state(child, "0/1/0"), ("01.07.03.00", "verizon"))
++
++
+ class WaitForModemReadyTest(SimpleTestCase):
+     def test_waits_through_not_ready_then_returns(self):
+         clock = _clock(self)
+diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_firmware_reset.py b/nautobot_app_device_bootstrap/tests/test_cell_firmware_reset.py
+--- a/nautobot_app_device_bootstrap/tests/test_cell_firmware_reset.py	2026-10-15 18:27:11.397874645 +0000
++++ b/nautobot_app_device_bootstrap/tests/test_cell_firmware_reset.py	2026-10-15 18:27:11.409506260 +0000
+@@ -116,8 +116,8 @@
+     def test_verizon_with_modem(self):
+         with mock.patch.object(cfr, "_find_cellular_modules", return_value=[("PIM 1", "P-5GS6-GL", SUBSLOT)]):
+             self.assertTrue(cfr.applies_to(_device("Verizon Wireless"), {}))
+-            self.assertFalse(cfr.applies_to(_device("FirstNet"), {}))
+-            self.assertFalse(cfr.applies_to(_device("Router"), {}))
++            self.assertTrue(cfr.applies_to(_device("FirstNet"), {}))
++            self.assertFalse(cfr.applies_to(_device("Router"), {}))  # modem, no carrier tag
+ 
+     def test_no_modem(self):
+         with mock.patch.object(cfr, "_find_cellular_modules", return_value=[]):
+@@ -189,8 +189,21 @@
+         calls, _, _ = self._run(before=[FW_VERIZON], after=[FW_GENERIC], carrier_version=None, reactivated=("02.15.01.00", "verizon"))
+         self.assertEqual(calls[-1][0], "wait_active")
+ 
+-    def test_non_verizon_device_skips(self):
+-        calls, child1, logger = self._run(before=[FW_VERIZON], after=[FW_GENERIC], device=_device("FirstNet"))
++    def test_untagged_device_skips(self):
++        calls, child1, logger = self._run(before=[FW_VERIZON], after=[FW_GENERIC], device=_device("Router"))
+         self.assertEqual(calls, [])
+         child1.save_config.assert_not_called()
+         self.assertIn("does not use the firmware reset", logger.text("info"))
++
++    def test_firstnet_runs_the_same_procedure_on_the_att_image(self):
++        calls, child1, logger = self._run(
++            before=[FW_VERIZON], after=[FW_GENERIC], device=_device("FirstNet"), reactivated=(TARGET, "att"),
++        )
++        self.assertEqual(
++            [c[0] for c in calls],
++            ["cleanup", "activate", "wait_active", "reload", "wait_boot", "activate", "wait_active"],
++        )
++        self.assertEqual(calls[1], ("activate", SUBSLOT, 2))        # GENERIC before the reload
++        self.assertEqual(calls[5], ("activate", SUBSLOT, 1))        # ATT after it
++        self.assertEqual(calls[6], ("wait_active", SUBSLOT, "att"))
++        child1.save_config.assert_called_once()
 diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_profile.py b/nautobot_app_device_bootstrap/tests/test_cell_profile.py
 --- a/nautobot_app_device_bootstrap/tests/test_cell_profile.py	1970-01-01 00:00:00.000000000 +0000
-+++ b/nautobot_app_device_bootstrap/tests/test_cell_profile.py	2026-10-15 17:35:48.046436624 +0000
-@@ -0,0 +1,230 @@
++++ b/nautobot_app_device_bootstrap/tests/test_cell_profile.py	2026-10-15 18:27:11.409348759 +0000
+@@ -0,0 +1,256 @@
 +"""APN profile step: the data-profile attach must not go green on a rejection.
 +
 +The controller rejects the attach with a bare "Error: ... still in reset"
@@ -518,15 +702,19 @@ diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_profile.py b/nautobot_
 +AUTO_SIM_OFF = ["controller cellular 0/1/0", " no lte firmware auto-sim"]
 +
 +
++STILL_DOWN = "Modem is still down, please wait for modem to come up\n"
++
++
 +class ConfigChild:
 +    """send_config_set() answers from a script; the last output repeats.
-+    send_command() answers `show cellular X firmware` from `firmware`."""
++    send_command() answers `show cellular X firmware` from `firmware`
++    (a list consumed in order, last repeats)."""
 +
-+    def __init__(self, outputs, firmware=FW_MANUAL):
++    def __init__(self, outputs, firmware=(FW_MANUAL,)):
 +        self.outputs = list(outputs)
 +        self.config_sets = []
 +        self.commands = []
-+        self.firmware = firmware
++        self.firmware = list(firmware) if not isinstance(firmware, str) else [firmware]
 +
 +    def drain(self, **kwargs):
 +        pass
@@ -537,7 +725,9 @@ diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_profile.py b/nautobot_
 +
 +    def send_command(self, cmd, **kwargs):
 +        self.commands.append(cmd)
-+        return self.firmware if "firmware" in cmd else ""
++        if "firmware" in cmd:
++            return self.firmware.pop(0) if len(self.firmware) > 1 else self.firmware[0]
++        return ""
 +
 +
 +class ErrorDetectionTest(SimpleTestCase):
@@ -605,42 +795,62 @@ diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_profile.py b/nautobot_
 +
 +
 +class DisableAutoSimTest(SimpleTestCase):
-+    def test_sends_no_auto_sim_and_confirms_manual(self):
-+        _clock(self, module=cp)
-+        child = ConfigChild([ACCEPTED], firmware=FW_MANUAL)
++    def setUp(self):
++        # One clock: cell_profile and cell_firmware share the same `time`
++        # module, so patching it once covers _wait_for_modem_ready too.
++        self.clock = _clock(self, module=cp)
++
++    def test_already_manual_sends_nothing(self):
++        # The normal case: the reset step already turned auto-sim off. The
++        # change would reset the modem, so it must NOT be re-sent.
++        child = ConfigChild([ACCEPTED], firmware=[FW_MANUAL])
++        logger = FakeLogger()
++        cp._disable_auto_sim(child, SUBSLOT, logger)
++        self.assertEqual(child.config_sets, [])
++        self.assertIn("auto-sim already off", logger.text("info"))
++
++    def test_auto_sends_command_and_waits_out_the_modem_reset(self):
++        # pre-check AUTO → command → modem drops → comes back → post-check MANUAL
++        child = ConfigChild([ACCEPTED], firmware=[FW_AUTO, STILL_DOWN, FW_MANUAL])
 +        logger = FakeLogger()
 +        cp._disable_auto_sim(child, SUBSLOT, logger)
 +        self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
-+        self.assertIn("show cellular 0/1/0 firmware", child.commands)
++        self.assertIn("modem went down for the auto-sim change", logger.text("info"))
 +        self.assertIn("Firmware Activation mode = MANUAL", logger.text("info"))
 +        self.assertEqual(logger.text("warning"), "")
 +
++    def test_auto_with_no_reset_observed_continues_after_the_window(self):
++        child = ConfigChild([ACCEPTED], firmware=[FW_AUTO, FW_MANUAL])
++        logger = FakeLogger()
++        cp._disable_auto_sim(child, SUBSLOT, logger)
++        self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
++        self.assertIn("no modem reset observed within 90s", logger.text("info"))
++        self.assertEqual(self.clock.sleeps, [10] * 9)
++
 +    def test_still_auto_afterwards_is_warned_not_fatal(self):
-+        _clock(self, module=cp)
-+        child = ConfigChild([ACCEPTED], firmware=FW_AUTO)
++        child = ConfigChild([ACCEPTED], firmware=[FW_AUTO, STILL_DOWN, FW_AUTO])
 +        logger = FakeLogger()
 +        cp._disable_auto_sim(child, SUBSLOT, logger)
 +        self.assertIn("still reports Firmware Activation mode = AUTO", logger.text("warning"))
 +
-+    def test_no_mode_line_is_accepted_quietly(self):
-+        _clock(self, module=cp)
-+        child = ConfigChild([ACCEPTED], firmware="Modem is not ready\n")
++    def test_no_mode_line_sends_command_and_is_quiet(self):
++        # A module without the firmware table command cannot be confirmed either way.
++        child = ConfigChild([ACCEPTED], firmware=["% Invalid input detected at '^' marker.\n"])
 +        logger = FakeLogger()
 +        cp._disable_auto_sim(child, SUBSLOT, logger)
++        self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
 +        self.assertEqual(logger.text("warning"), "")
 +
 +    def test_in_reset_is_retried_then_applied(self):
-+        clock = _clock(self, module=cp)
-+        child = ConfigChild([IN_RESET, ACCEPTED])
++        child = ConfigChild([IN_RESET, ACCEPTED], firmware=[FW_AUTO, STILL_DOWN, FW_MANUAL])
 +        logger = FakeLogger()
 +        cp._disable_auto_sim(child, SUBSLOT, logger)
 +        self.assertEqual(child.config_sets, [AUTO_SIM_OFF, AUTO_SIM_OFF])
-+        self.assertEqual(clock.sleeps, [60])
++        self.assertIn(60, self.clock.sleeps)
 +        self.assertIn("no lte firmware auto-sim applied on attempt 2", logger.text("info"))
 +
 +    def test_rejection_raises(self):
-+        _clock(self, module=cp)
-+        child = ConfigChild([INVALID])
++        child = ConfigChild([INVALID], firmware=[FW_AUTO])
 +        with self.assertRaisesRegex(RuntimeError, r"no lte firmware auto-sim rejected .*% Invalid input"):
 +            cp._disable_auto_sim(child, SUBSLOT, FakeLogger())
 +
@@ -690,8 +900,8 @@ diff -ruN a/nautobot_app_device_bootstrap/tests/test_cell_profile.py b/nautobot_
 +                cp.run(mock.Mock(), device, None, settings, FakeLogger())
 +        attach.assert_not_called()
 diff -ruN a/nautobot_app_device_bootstrap/tests/test_console_save.py b/nautobot_app_device_bootstrap/tests/test_console_save.py
---- a/nautobot_app_device_bootstrap/tests/test_console_save.py	2026-10-15 17:06:35.940523046 +0000
-+++ b/nautobot_app_device_bootstrap/tests/test_console_save.py	2026-10-15 17:35:48.046045554 +0000
+--- a/nautobot_app_device_bootstrap/tests/test_console_save.py	2026-10-15 18:27:11.405048693 +0000
++++ b/nautobot_app_device_bootstrap/tests/test_console_save.py	2026-10-15 18:27:11.409294485 +0000
 @@ -82,36 +82,78 @@
      return c
  

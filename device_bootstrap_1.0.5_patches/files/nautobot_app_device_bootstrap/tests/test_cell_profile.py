@@ -57,15 +57,19 @@ FW_AUTO = FW_MANUAL.replace("MANUAL", "AUTO")
 AUTO_SIM_OFF = ["controller cellular 0/1/0", " no lte firmware auto-sim"]
 
 
+STILL_DOWN = "Modem is still down, please wait for modem to come up\n"
+
+
 class ConfigChild:
     """send_config_set() answers from a script; the last output repeats.
-    send_command() answers `show cellular X firmware` from `firmware`."""
+    send_command() answers `show cellular X firmware` from `firmware`
+    (a list consumed in order, last repeats)."""
 
-    def __init__(self, outputs, firmware=FW_MANUAL):
+    def __init__(self, outputs, firmware=(FW_MANUAL,)):
         self.outputs = list(outputs)
         self.config_sets = []
         self.commands = []
-        self.firmware = firmware
+        self.firmware = list(firmware) if not isinstance(firmware, str) else [firmware]
 
     def drain(self, **kwargs):
         pass
@@ -76,7 +80,9 @@ class ConfigChild:
 
     def send_command(self, cmd, **kwargs):
         self.commands.append(cmd)
-        return self.firmware if "firmware" in cmd else ""
+        if "firmware" in cmd:
+            return self.firmware.pop(0) if len(self.firmware) > 1 else self.firmware[0]
+        return ""
 
 
 class ErrorDetectionTest(SimpleTestCase):
@@ -144,42 +150,62 @@ class AttachDataProfileTest(SimpleTestCase):
 
 
 class DisableAutoSimTest(SimpleTestCase):
-    def test_sends_no_auto_sim_and_confirms_manual(self):
-        _clock(self, module=cp)
-        child = ConfigChild([ACCEPTED], firmware=FW_MANUAL)
+    def setUp(self):
+        # One clock: cell_profile and cell_firmware share the same `time`
+        # module, so patching it once covers _wait_for_modem_ready too.
+        self.clock = _clock(self, module=cp)
+
+    def test_already_manual_sends_nothing(self):
+        # The normal case: the reset step already turned auto-sim off. The
+        # change would reset the modem, so it must NOT be re-sent.
+        child = ConfigChild([ACCEPTED], firmware=[FW_MANUAL])
+        logger = FakeLogger()
+        cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertEqual(child.config_sets, [])
+        self.assertIn("auto-sim already off", logger.text("info"))
+
+    def test_auto_sends_command_and_waits_out_the_modem_reset(self):
+        # pre-check AUTO → command → modem drops → comes back → post-check MANUAL
+        child = ConfigChild([ACCEPTED], firmware=[FW_AUTO, STILL_DOWN, FW_MANUAL])
         logger = FakeLogger()
         cp._disable_auto_sim(child, SUBSLOT, logger)
         self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
-        self.assertIn("show cellular 0/1/0 firmware", child.commands)
+        self.assertIn("modem went down for the auto-sim change", logger.text("info"))
         self.assertIn("Firmware Activation mode = MANUAL", logger.text("info"))
         self.assertEqual(logger.text("warning"), "")
 
+    def test_auto_with_no_reset_observed_continues_after_the_window(self):
+        child = ConfigChild([ACCEPTED], firmware=[FW_AUTO, FW_MANUAL])
+        logger = FakeLogger()
+        cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
+        self.assertIn("no modem reset observed within 90s", logger.text("info"))
+        self.assertEqual(self.clock.sleeps, [10] * 9)
+
     def test_still_auto_afterwards_is_warned_not_fatal(self):
-        _clock(self, module=cp)
-        child = ConfigChild([ACCEPTED], firmware=FW_AUTO)
+        child = ConfigChild([ACCEPTED], firmware=[FW_AUTO, STILL_DOWN, FW_AUTO])
         logger = FakeLogger()
         cp._disable_auto_sim(child, SUBSLOT, logger)
         self.assertIn("still reports Firmware Activation mode = AUTO", logger.text("warning"))
 
-    def test_no_mode_line_is_accepted_quietly(self):
-        _clock(self, module=cp)
-        child = ConfigChild([ACCEPTED], firmware="Modem is not ready\n")
+    def test_no_mode_line_sends_command_and_is_quiet(self):
+        # A module without the firmware table command cannot be confirmed either way.
+        child = ConfigChild([ACCEPTED], firmware=["% Invalid input detected at '^' marker.\n"])
         logger = FakeLogger()
         cp._disable_auto_sim(child, SUBSLOT, logger)
+        self.assertEqual(child.config_sets, [AUTO_SIM_OFF])
         self.assertEqual(logger.text("warning"), "")
 
     def test_in_reset_is_retried_then_applied(self):
-        clock = _clock(self, module=cp)
-        child = ConfigChild([IN_RESET, ACCEPTED])
+        child = ConfigChild([IN_RESET, ACCEPTED], firmware=[FW_AUTO, STILL_DOWN, FW_MANUAL])
         logger = FakeLogger()
         cp._disable_auto_sim(child, SUBSLOT, logger)
         self.assertEqual(child.config_sets, [AUTO_SIM_OFF, AUTO_SIM_OFF])
-        self.assertEqual(clock.sleeps, [60])
+        self.assertIn(60, self.clock.sleeps)
         self.assertIn("no lte firmware auto-sim applied on attempt 2", logger.text("info"))
 
     def test_rejection_raises(self):
-        _clock(self, module=cp)
-        child = ConfigChild([INVALID])
+        child = ConfigChild([INVALID], firmware=[FW_AUTO])
         with self.assertRaisesRegex(RuntimeError, r"no lte firmware auto-sim rejected .*% Invalid input"):
             cp._disable_auto_sim(child, SUBSLOT, FakeLogger())
 

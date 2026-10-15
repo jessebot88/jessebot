@@ -1,4 +1,4 @@
-# Device Bootstrap 1.0.5 (patched) — three fixes from the 2026-10-15 runs
+# Device Bootstrap 1.0.5 (patched) — fixes from the 2026-10-15 runs
 
 Version stays 1.0.5. Install the wheel with
 `pip install --force-reinstall --no-deps nautobot_app_device_bootstrap-1.0.5-py3-none-any.whl`,
@@ -37,27 +37,54 @@ Verizon passed only because that modem had finished rebooting before the watch r
 3. `_attach_data_profile()` retries on "still in reset" every 60 s, up to 10 times. Any other
    error raises at once; a modem that never leaves reset fails the step.
 
-4. **Auto-sim is turned off before the profile write (added after the TXMNDOTWR01 run).**
+4. **Auto-sim is confirmed off before the profile write (added after the TXMNDOTWR01 run).**
    That router's module reported `Firmware Activation mode = AUTO`. Auto-sim re-applies the
    carrier image on modem resets and with it the carrier's DEFAULT profile set: profile 1 was
    written as the configured APN, then read back at validation as `firstnet-broadband`/IPv4v6
-   (the AT&T defaults, with `attm2mglobal` on profile 4) and the SIM never attached. The Verizon
-   reset step already sends `no lte firmware auto-sim`; FirstNet routers skip that step. The APN
-   step now sends `no lte firmware auto-sim` under `controller cellular <subslot>` for every
-   carrier (a no-op where already off), with the same in-reset retry as the attach, then reads
-   `show cellular X firmware` and logs the activation mode (a module still reporting AUTO is a
-   warning, not a failure, since validation catches the end result). The Verizon-only
-   `lte cellular-profile-cleanup` is NOT sent here: it wipes profiles and resets the modem.
-   The controller attach and the auto-sim line share one helper (`_controller_config`).
+   (the AT&T defaults, with `attm2mglobal` on profile 4) and the SIM never attached. The APN step
+   now reads the activation mode first. On MANUAL (the normal case, see fix 3 below) it sends
+   nothing — the change itself resets the modem, so it must not be re-sent. On AUTO (or no mode
+   line) it sends `no lte firmware auto-sim` under the controller, with the same in-reset retry as
+   the attach, then WAITS OUT the modem reset: it watches `show cellular X firmware` for up to 90 s
+   for the modem to drop and, once it has, waits for it to answer again before the profile is
+   written. A module still reporting AUTO afterwards is a warning, not a failure. The controller
+   attach and the auto-sim line share one helper (`_controller_config`).
 
-Tests: `tests/test_cell_profile.py` (17 new): error detection, retry/sleep sequences, fail-after-N,
-auto-sim command + mode read-back, and `run()` ordering auto-sim-off → confirm → syslog wait →
-modem-ready → attach.
+5. **"Modem is still down" counts as not ready** (`jobs/steps/cell_firmware.py`). The APN step's
+   console transcript showed `show cellular 0/1/0 firmware` answering "Modem is still down, please
+   wait for modem to come up" while `show cellular 0/1/0 hardware` already said "Modem Online"; the
+   readiness gate took the hardware answer and the attach was rejected as "still in reset". The
+   shared modem-state reader now treats a "still down" / "not ready" answer from the firmware
+   command as not ready without falling back to hardware (a "% Invalid" from a module that has no
+   firmware table command still falls back). The firmware step's waits use the same reader.
+
+Tests: `tests/test_cell_profile.py` (19): error detection, retry/sleep sequences, fail-after-N,
+auto-sim (already-manual sends nothing, auto sends + waits out the reset, no reset within the
+window, still-auto warning), and `run()` ordering auto-sim → confirm → syslog wait → modem-ready
+→ attach. `tests/test_cell_firmware.py` gains the still-down / fallback cases.
 
 The syslog watch itself is untouched. Its `Graphit 5G` pattern returns without a prior
 MODEM_DOWN/RESTART event, which is a plausible reason it ended early on this 5G module, but the
 readiness gate and retry make the step correct either way, so the Verizon-tested behaviour was
 left alone.
+
+---
+
+## Fix 3 — the modem reset procedure runs for every carrier (`jobs/steps/cell_firmware_reset.py`)
+
+`RESET_CARRIERS` is now `("verizon", "firstnet")`. The step was the Verizon-only vendor workaround;
+the FirstNet failure above is exactly what it prevents (its first action is `no lte firmware
+auto-sim` + `lte cellular-profile-cleanup`), and one deterministic, bench-tested cellular path for
+both carriers beats a per-carrier special case. For FirstNet it re-activates the ATT image after
+the reload (`_CARRIER_FW_NAMES`), and the APN step then re-creates and attaches the profile as it
+does for Verizon. Routers with a modem but no carrier tag still skip it.
+
+**Cost:** FirstNet routers now get the extra mid-pipeline reload the Verizon ones already had
+(roughly 5–10 minutes more per router). No pipeline/settings change is needed: the default router
+pipeline already contains `cell_firmware_reset`; it was gated by carrier tag.
+
+With this in place the APN step's own auto-sim handling (fix 1, item 4) is a no-op on both
+carriers; it stays as the safety net for pipelines that drop the reset step.
 
 ---
 
@@ -102,7 +129,7 @@ startup-config read-back paths.
 
 Executed here against the patched tree with nautobot/django/netmiko stubbed out:
 test_console_save, test_cell_profile, test_cell_firmware, test_cell_firmware_reset, test_drivers,
-test_console_ports, test_transcript, test_ndes_resolution — 116 tests, all pass. The remaining
+test_console_ports, test_transcript, test_ndes_resolution — 118 tests, all pass. The remaining
 modules (test_validate_checks, test_pipeline_consistency, test_batch) need `netutils`,
 `django_filters` and real models and were not runnable in this environment; nothing in them
 touches the changed code paths. Run the full suite at home with `nautobot-server test`.

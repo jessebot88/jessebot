@@ -11,6 +11,7 @@ import time
 from ..console import EXEC_PROMPT
 from .cell_firmware import (
     _CARRIER_TAG_MAP,
+    _MODEM_DOWN_RE,
     _find_cellular_modules,
     _parse_firmware_table,
     _wait_for_modem_ready,
@@ -33,6 +34,12 @@ _MODEM_IN_RESET = re.compile(r"still in reset|re-execute this (?:cmd|command)", 
 # firmware step, after which a modem that is still in reset is a real failure.
 _ATTACH_RETRY_WAIT = 60
 _ATTACH_RETRIES = 10
+
+# Turning auto-sim off resets the modem. Watch for it to drop for this long
+# before concluding it didn't; once it drops, the normal readiness wait
+# (up to 600s) takes over.
+_AUTO_SIM_RESET_WINDOW = 90
+_AUTO_SIM_RESET_POLL = 10
 
 
 def preflight(device, settings):
@@ -72,10 +79,10 @@ def run(child, device, session, settings, logger):
         # carrier image, which restores the carrier DEFAULT profiles — seen
         # live on a FirstNet router: profile 1 was written as the configured
         # APN, then read back at validation as firstnet-broadband/IPv4v6 (the
-        # AT&T defaults) with the SIM never attaching. The Verizon reset step
-        # already turns auto-sim off; do it here for every carrier (a no-op
-        # where it is already off) BEFORE the profile write, so nothing can
-        # put the defaults back afterwards.
+        # AT&T defaults) with the SIM never attaching. The reset step turns
+        # auto-sim off for every carrier; this is the safety net for
+        # pipelines without it, and it must come BEFORE the profile write
+        # (the change itself resets the modem).
         _disable_auto_sim(child, subslot, logger)
 
         cmd = f"cellular {subslot} lte profile create 1 {apn} none ipv4"
@@ -177,24 +184,69 @@ def _controller_config(
         return
 
 
-def _disable_auto_sim(child, subslot, logger):
-    """Turn off `lte firmware auto-sim` under the controller and confirm the
-    module reports MANUAL activation mode.
-
-    Auto-sim re-applies the carrier image on modem resets and, with it, the
-    carrier's default profile set — which overwrites the APN profile this
-    step writes. Idempotent: harmless where the Verizon reset step already
-    turned it off. A module that prints no "Firmware Activation mode" line
-    cannot be confirmed and is left at the command's word; one that still
-    reads AUTO afterwards is logged as a warning, since the profile wipe is
-    then still possible (validation will catch the end result).
-    """
-    logger.info(f"Disabling firmware auto-sim on subslot {subslot} so the carrier defaults cannot overwrite the APN profile")
-    _controller_config(child, subslot, [" no lte firmware auto-sim"], "no lte firmware auto-sim", logger)
-
+def _activation_mode(child, subslot):
+    """'auto' / 'manual' from `show cellular X firmware`, or None if the
+    module prints no "Firmware Activation mode" line."""
     child.drain(quiet=0.3, max_wait=3)
     output = child.send_command(f"show cellular {subslot} firmware", read_timeout=30)
     _, mode = _parse_firmware_table(output)
+    return mode
+
+
+def _absorb_modem_reset(child, subslot, logger, window=_AUTO_SIM_RESET_WINDOW, poll=_AUTO_SIM_RESET_POLL):
+    """Wait out the modem reset that follows the auto-sim change.
+
+    Watches `show cellular X firmware` for the modem to drop ("still down" /
+    "not ready", or the CLI not answering), then waits for it to report a
+    firmware version again, so the profile write that follows does not land
+    mid-reset and get lost. A modem that has not dropped within `window`
+    seconds is taken as not having reset. Returns True if a reset was seen.
+    """
+    from netmiko.exceptions import ReadTimeout
+
+    deadline = time.time() + window
+    while time.time() < deadline:
+        child.drain(quiet=0.3, max_wait=3)
+        try:
+            output = child.send_command(f"show cellular {subslot} firmware", read_timeout=30)
+            down = bool(_MODEM_DOWN_RE.search(output or ""))
+        except ReadTimeout:
+            down = True
+        if down:
+            logger.info(f"Subslot {subslot}: modem went down for the auto-sim change — waiting for it to come back")
+            _wait_for_modem_ready(child, subslot, logger)
+            return True
+        time.sleep(poll)
+    logger.info(f"Subslot {subslot}: no modem reset observed within {window}s of the auto-sim change — continuing")
+    return False
+
+
+def _disable_auto_sim(child, subslot, logger):
+    """Make sure `lte firmware auto-sim` is off before the profile is written.
+
+    Auto-sim re-applies the carrier image on modem resets and, with it, the
+    carrier's default profile set — which overwrites the APN profile this
+    step writes. Only acts when the module reports Firmware Activation mode
+    AUTO (or prints no mode at all): a module already on MANUAL — the normal
+    case, since the reset step turns auto-sim off for every carrier — is
+    left alone, because the change itself resets the modem. When the command
+    is sent, that reset is waited out before returning. A module that still
+    reads AUTO afterwards is logged as a warning, since the profile wipe is
+    then still possible (validation catches the end result).
+    """
+    mode = _activation_mode(child, subslot)
+    if mode == "manual":
+        logger.info(f"Subslot {subslot}: Firmware Activation mode = MANUAL — auto-sim already off")
+        return
+
+    logger.info(
+        f"Subslot {subslot}: Firmware Activation mode = {(mode or 'not reported').upper()} — "
+        "disabling auto-sim so the carrier defaults cannot overwrite the APN profile"
+    )
+    _controller_config(child, subslot, [" no lte firmware auto-sim"], "no lte firmware auto-sim", logger)
+    _absorb_modem_reset(child, subslot, logger)
+
+    mode = _activation_mode(child, subslot)
     if mode == "auto":
         logger.warning(
             f"Subslot {subslot} still reports Firmware Activation mode = AUTO after "
